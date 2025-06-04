@@ -13,6 +13,8 @@ services:
           path: ./Untergang/src/
         - action: rebuild
           path: ./Dockerfile
+    environment:
+      - DATABASE_URL=postgres://postgres:password@db:5432/Untergang
   db: 
     image: postgres:17.5-alpine
     restart: always
@@ -21,8 +23,9 @@ services:
       - POSTGRES_PASSWORD=password
       - POSTGRES_USER=postgres
       - POSTGRES_DB=Untergang
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+    # Uncomment the section underneath to persist the database
+    # volumes:
+    #   - postgres_data:/var/lib/postgresql/data
 
-volumes:
-  postgres_data:
+# volumes:
+#   postgres_data:

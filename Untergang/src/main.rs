@@ -9,16 +9,23 @@ mod client;
 use client::{Client, ClientId};
 
 mod db;
+use db::{connect_db, initialize_db};
 
 #[tokio::main]
 async fn main() {
     // initialize tracing
     tracing_subscriber::fmt::init();
 
+    let pool = connect_db().await.unwrap();
+    match initialize_db(&pool).await {
+        Ok(_) => println!("Database initialized"),
+        Err(e) => println!("Error initializing database: {}", e),
+    }
+
     // build our application with a route
     let app =
         Router::new()
-            .route("/health", get(|| async { "Status: OKAY" }))
+            .route("/health", get(|| async { "Status: OK" }))
             .route(
                 "/client",
                 post(move |Json(client): Json<Client>| async move {
