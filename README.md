@@ -1,5 +1,4 @@
-#Rust Walker
-
+# Untergangs
 
 ## Running the app
 To run the app run
