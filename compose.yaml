@@ -1,0 +1,28 @@
+services:
+  server: 
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+    develop:
+      watch:
+        - action: rebuild
+          path: ./Untergang/src/
+        - action: rebuild
+          path: ./Dockerfile
+  db: 
+    image: postgres:17.5-alpine
+    restart: always
+    shm_size: 1024MB
+    environment:
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=Untergang
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
