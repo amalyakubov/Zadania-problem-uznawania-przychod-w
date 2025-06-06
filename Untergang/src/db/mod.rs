@@ -14,17 +14,18 @@ pub async fn connect_db() -> Result<Pool<Postgres>, sqlx::Error> {
     Ok(pool)
 }
 
+// TODO: Prepare migrations for this
 pub async fn initialize_db(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
     let mut transaction = pool.begin().await?;
 
-    sqlx::query(
+    sqlx::query!(
         "
         CREATE TABLE IF NOT EXISTS personal_clients (
             id SERIAL PRIMARY KEY,
-            first_name VARCHAR(255),
-            last_name VARCHAR(255),
-            email VARCHAR(255),
-            phone_number VARCHAR(255),
+            first_name TEXT,    
+            last_name TEXT,
+            email TEXT,
+            phone_number TEXT,
             pesel VARCHAR(11),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             is_deleted BOOLEAN NOT NULL DEFAULT FALSE
@@ -34,19 +35,32 @@ pub async fn initialize_db(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
     .execute(&mut *transaction)
     .await?;
 
-    sqlx::query(
+    sqlx::query!(
         "
         CREATE TABLE IF NOT EXISTS company_clients (
             id SERIAL PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            address VARCHAR(255) NOT NULL,
-            email VARCHAR(255) NOT NULL,
-            phone_number VARCHAR(255) NOT NULL,
+            name TEXT NOT NULL,
+            address TEXT NOT NULL,
+            email TEXT NOT NULL,
+            phone_number TEXT NOT NULL,
             krs VARCHAR(10) NOT NULL,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             is_deleted BOOLEAN NOT NULL DEFAULT FALSE
         )
         ",
+    )
+    .execute(&mut *transaction)
+    .await?;
+
+    sqlx::query!(
+        "CREATE TABLE IF NOT EXISTS software (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        version TEXT NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        is_deleted BOOLEAN NOT NULL DEFAULT FALSE
+    )"
     )
     .execute(&mut *transaction)
     .await?;
