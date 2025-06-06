@@ -53,12 +53,12 @@ pub async fn delete_client(
 ) -> Result<StatusCode, StatusCode> {
     match client_id {
         ClientId::Individual(pesel) => {
-            let result = sqlx::query(
+            let result = sqlx::query!(
                 r#"UPDATE personal_clients
                  SET is_deleted = true, first_name = null, last_name = null, email = null, phone_number = null, pesel = null, created_at = null
                  WHERE pesel = $1"#,
+                client_id.0,
             )
-            .bind(pesel)
             .execute(&pool)
             .await;
             match result {
@@ -67,5 +67,45 @@ pub async fn delete_client(
             }
         }
         ClientId::Company(krs) => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
+// TODO: Prepare migrations for this
+pub async fn update_client(
+    State(pool): State<Pool<Postgres>>,
+    Json(client): Json<Client>,
+) -> Result<StatusCode, StatusCode> {
+    match client {
+        Client::Individual(individual) => {
+            let result = sqlx::query!(
+                "UPDATE personal_clients SET first_name = $1, last_name = $2, email = $3, phone_number = $4 WHERE pesel = $5",
+                individual.first_name,
+                individual.last_name,
+                individual.email,
+                individual.phone_number,
+                individual.pesel,
+            )
+            .execute(&pool)
+            .await;
+            match result {
+                Ok(_) => Ok(StatusCode::OK),
+                Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            }
+        }
+        Client::Company(company) => {
+            let result = sqlx::query!("UPDATE company_clients SET name = $1, address = $2, email = $3, phone_number = $4 WHERE krs = $5",
+                company.name,
+                company.address,
+                company.email,
+                company.phone_number,
+                company.krs,
+            )
+            .execute(&pool)
+            .await;
+            match result {
+                Ok(_) => Ok(StatusCode::OK),
+                Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            }
+        }
     }
 }

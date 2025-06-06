@@ -14,6 +14,7 @@ RUN rm src/*.rs
 
 # copy your source tree
 COPY ./Untergang/src ./src
+COPY ./Untergang/.sqlx ./.sqlx
 
 # build for release
 RUN rm ./target/release/deps/Untergang*

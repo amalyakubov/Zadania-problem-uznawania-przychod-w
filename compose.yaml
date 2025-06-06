@@ -19,6 +19,8 @@ services:
     image: postgres:17.5-alpine
     restart: always
     shm_size: 1024MB
+    ports: 
+      - "5432:5432"
     environment:
       - POSTGRES_PASSWORD=password
       - POSTGRES_USER=postgres
