@@ -1,8 +1,8 @@
 use axum::{
-    extract::{Path, Query},
+    extract::Json,
     http::StatusCode,
     routing::{delete, get, post, put},
-    Json, Router,
+    Router,
 };
 
 mod client;
@@ -10,6 +10,8 @@ use client::{Client, ClientId};
 
 mod db;
 use db::{connect_db, initialize_db};
+
+mod handler;
 
 #[tokio::main]
 async fn main() {
@@ -23,27 +25,20 @@ async fn main() {
     }
 
     // build our application with a route
-    let app =
-        Router::new()
-            .route("/health", get(|| async { "Status: OK" }))
-            .route(
-                "/client",
-                post(move |Json(client): Json<Client>| async move {
-                    (StatusCode::CREATED, Json(client))
-                }),
-            )
-            .route(
-                "/client",
-                delete(move |Json(client): Json<ClientId>| async move {
-                    (StatusCode::OK, Json(client))
-                }),
-            )
-            .route(
-                "/client",
-                put(
-                    move |Json(client): Json<Client>| async move { (StatusCode::OK, Json(client)) },
-                ),
-            );
+    let app = Router::new()
+        .route("/health", get(|| async { "Status: OK" }))
+        .route("/client", post(handler::create_client))
+        .route(
+            "/client",
+            delete(
+                move |Json(client): Json<ClientId>| async move { (StatusCode::OK, Json(client)) },
+            ),
+        )
+        .route(
+            "/client",
+            put(move |Json(client): Json<Client>| async move { (StatusCode::OK, Json(client)) }),
+        )
+        .with_state(pool);
 
     // run our app with hyper, listening globally on port 3000
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();

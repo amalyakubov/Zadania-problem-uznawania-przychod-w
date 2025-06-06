@@ -1,12 +1,14 @@
 use sqlx::{Pool, Postgres};
 
 pub async fn connect_db() -> Result<Pool<Postgres>, sqlx::Error> {
+    // For dev use only:
+    // let db_url = "postgres://postgres:password@localhost:5432/Untergang";
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool: Pool<Postgres> = match Pool::connect(&db_url).await {
         Ok(pool) => pool,
         Err(e) => {
             eprintln!("Error connecting to the database: {}", e);
-            std::process::exit(1);
+            return Err(e);
         }
     };
     Ok(pool)

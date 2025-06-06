@@ -2,20 +2,20 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct IndividualClient {
-    first_name: String,
-    last_name: String,
-    email: String,
-    phone_nummber: String,
-    pesel: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    pub phone_number: String,
+    pub pesel: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CompanyClient {
-    name: String,
-    address: String,
-    email: String,
-    phone_number: String,
-    krs: String,
+    pub name: String,
+    pub address: String,
+    pub email: String,
+    pub phone_number: String,
+    pub krs: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
