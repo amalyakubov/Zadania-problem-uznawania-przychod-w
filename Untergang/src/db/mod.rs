@@ -21,12 +21,13 @@ pub async fn initialize_db(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
         "
         CREATE TABLE IF NOT EXISTS personal_clients (
             id SERIAL PRIMARY KEY,
-            first_name VARCHAR(255) NOT NULL,
-            last_name VARCHAR(255) NOT NULL,
-            email VARCHAR(255) NOT NULL,
-            phone_number VARCHAR(255) NOT NULL,
-            pesel VARCHAR(11) NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            first_name VARCHAR(255),
+            last_name VARCHAR(255),
+            email VARCHAR(255),
+            phone_number VARCHAR(255),
+            pesel VARCHAR(11),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE
         )
         ",
     )
@@ -42,7 +43,8 @@ pub async fn initialize_db(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
             email VARCHAR(255) NOT NULL,
             phone_number VARCHAR(255) NOT NULL,
             krs VARCHAR(10) NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE
         )
         ",
     )

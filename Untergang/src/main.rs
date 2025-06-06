@@ -28,12 +28,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(|| async { "Status: OK" }))
         .route("/client", post(handler::create_client))
-        .route(
-            "/client",
-            delete(
-                move |Json(client): Json<ClientId>| async move { (StatusCode::OK, Json(client)) },
-            ),
-        )
+        .route("/client", delete(handler::delete_client))
         .route(
             "/client",
             put(move |Json(client): Json<Client>| async move { (StatusCode::OK, Json(client)) }),

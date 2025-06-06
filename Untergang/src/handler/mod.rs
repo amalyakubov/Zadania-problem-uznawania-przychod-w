@@ -4,7 +4,7 @@ use axum::{
 };
 use sqlx::{Pool, Postgres};
 
-use crate::client::Client;
+use crate::client::{Client, ClientId};
 
 pub async fn create_client(
     State(pool): State<Pool<Postgres>>,
@@ -43,5 +43,29 @@ pub async fn create_client(
                 Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
             }
         }
+    }
+}
+
+// TODO: Prepare migrations for this
+pub async fn delete_client(
+    State(pool): State<Pool<Postgres>>,
+    Json(client_id): Json<ClientId>,
+) -> Result<StatusCode, StatusCode> {
+    match client_id {
+        ClientId::Individual(pesel) => {
+            let result = sqlx::query(
+                r#"UPDATE personal_clients
+                 SET is_deleted = true, first_name = null, last_name = null, email = null, phone_number = null, pesel = null, created_at = null
+                 WHERE pesel = $1"#,
+            )
+            .bind(pesel)
+            .execute(&pool)
+            .await;
+            match result {
+                Ok(_) => Ok(StatusCode::OK),
+                Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            }
+        }
+        ClientId::Company(krs) => Err(StatusCode::BAD_REQUEST),
     }
 }

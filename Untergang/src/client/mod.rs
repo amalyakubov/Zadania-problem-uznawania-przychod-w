@@ -28,4 +28,10 @@ pub enum Client {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct ClientId(u64);
+#[serde(tag = "type")]
+pub enum ClientId {
+    #[serde(rename = "individual")]
+    Individual(String),
+    #[serde(rename = "company")]
+    Company(String),
+}
