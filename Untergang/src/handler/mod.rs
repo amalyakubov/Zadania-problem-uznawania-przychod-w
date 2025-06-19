@@ -20,7 +20,7 @@ pub async fn create_client(
     match client {
         Client::Individual(individual) => {
             let result = sqlx::query!(
-                "INSERT INTO personal_clients (first_name, last_name, email, phone_number, pesel) VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) VALUES ($1, $2, $3, $4, $5)",
                 individual.first_name,
                 individual.last_name,
                 individual.email,
@@ -39,7 +39,7 @@ pub async fn create_client(
         }
         Client::Company(company) => {
             let result = sqlx::query!(
-                "INSERT INTO company_clients (name, address, email, phone_number, krs) VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO company_client (name, address, email, phone_number, krs) VALUES ($1, $2, $3, $4, $5)",
                 company.name,
                 company.address,
                 company.email,
@@ -67,10 +67,10 @@ pub async fn delete_client(
     match client_id {
         ClientId::Individual(pesel) => {
             let result = sqlx::query!(
-                r#"UPDATE personal_clients
+                r#"UPDATE personal_client
                  SET is_deleted = true, first_name = null, last_name = null, email = null, phone_number = null, pesel = null, created_at = null
                  WHERE pesel = $1"#,
-                client_id.0,
+                pesel,
             )
             .execute(&pool)
             .await;
@@ -82,7 +82,7 @@ pub async fn delete_client(
                 )),
             }
         }
-        ClientId::Company(krs) => Err((
+        ClientId::Company(_krs) => Err((
             StatusCode::BAD_REQUEST,
             "Failed to delete client: coroprate clients are unable to be deleted".to_string(),
         )),
@@ -97,7 +97,7 @@ pub async fn update_client(
     match client {
         Client::Individual(individual) => {
             let result = sqlx::query!(
-                "UPDATE personal_clients SET first_name = $1, last_name = $2, email = $3, phone_number = $4 WHERE pesel = $5",
+                "UPDATE personal_client SET first_name = $1, last_name = $2, email = $3, phone_number = $4 WHERE pesel = $5",
                 individual.first_name,
                 individual.last_name,
                 individual.email,
@@ -115,7 +115,7 @@ pub async fn update_client(
             }
         }
         Client::Company(company) => {
-            let result = sqlx::query!("UPDATE company_clients SET name = $1, address = $2, email = $3, phone_number = $4 WHERE krs = $5",
+            let result = sqlx::query!("UPDATE company_client SET name = $1, address = $2, email = $3, phone_number = $4 WHERE krs = $5",
                 company.name,
                 company.address,
                 company.email,
@@ -136,15 +136,14 @@ pub async fn update_client(
 }
 
 #[derive(serde::Deserialize)]
-struct PurchaseRequest {
+pub struct PurchaseRequest {
     client_id: ClientId,
-    client_type: String,
     start_date: DateTime<Utc>,
     end_date: DateTime<Utc>,
-    product_id: u32,
+    product_id: i32,
     // price is calculated on the backen
     // update information is availbable in the database
-    years_supported: u32, // every year costs 1 000 additional zł, can be extended by 1, 2, 3 years
+    years_supported: i32, // every year costs 1 000 additional zł, can be extended by 1, 2, 3 years
 }
 
 pub async fn create_contract(
@@ -156,7 +155,6 @@ pub async fn create_contract(
         &pool,
         purchase_request.product_id,
         purchase_request.client_id.clone(),
-        &purchase_request.client_type,
     )
     .await
     .map_err(|_| {
@@ -183,7 +181,7 @@ pub async fn create_contract(
         purchase_request.client_id.clone(),
     )
     .await
-    .map_err(|error| {
+    .map_err(|error: sqlx::Error| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to get discount: {}", error),
@@ -207,9 +205,9 @@ pub async fn create_contract(
         final_price,
         purchase_request.product_id,
         purchase_request.client_id.clone(),
-        &purchase_request.client_type,
         purchase_request.start_date,
         purchase_request.end_date,
+        purchase_request.years_supported,
     )
     .await
     {

@@ -6,23 +6,25 @@ use axum::{
 };
 
 mod client;
-use client::{Client, ClientId};
+use client::Client;
 
 mod db;
-use db::{connect_db, initialize_db};
+use db::connect_db;
 
 mod handler;
 
 #[tokio::main]
 async fn main() {
+    // load .env file
+    dotenvy::dotenv().expect("Failed to load .env file");
     // initialize tracing
     tracing_subscriber::fmt::init();
 
     let pool = connect_db().await.unwrap();
-    match initialize_db(&pool).await {
-        Ok(_) => println!("Database initialized"),
-        Err(e) => println!("Error initializing database: {}", e),
-    }
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run migrations");
 
     // build our application with a route
     let app = Router::new()

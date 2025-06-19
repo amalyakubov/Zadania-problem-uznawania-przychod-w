@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO personal_clients (first_name, last_name, email, phone_number, pesel) VALUES ($1, $2, $3, $4, $5)",
+  "query": "UPDATE company_client SET name = $1, address = $2, email = $3, phone_number = $4 WHERE krs = $5",
   "describe": {
     "columns": [],
     "parameters": {
@@ -14,5 +14,5 @@
     },
     "nullable": []
   },
-  "hash": "214493dcef7bb254b7534e02c4aa23b3010a65f472645c74a13035c828629ab5"
+  "hash": "3dc1f5a0c9ea00d22102d9ef5466902aaeebfdd9e9720ca10650ced15065fc81"
 }
