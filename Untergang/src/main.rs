@@ -15,8 +15,6 @@ mod handler;
 
 #[tokio::main]
 async fn main() {
-    // load .env file
-    dotenvy::dotenv().expect("Failed to load .env file");
     // initialize tracing
     tracing_subscriber::fmt::init();
 

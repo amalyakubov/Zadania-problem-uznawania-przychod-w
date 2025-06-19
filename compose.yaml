@@ -1,5 +1,5 @@
 services:
-  server: 
+  server:
     build:
       context: .
       dockerfile: Dockerfile
@@ -15,11 +15,11 @@ services:
           path: ./Dockerfile
     environment:
       - DATABASE_URL=postgres://postgres:password@db:5432/Untergang
-  db: 
+  db:
     image: postgres:17.5-alpine
     restart: always
     shm_size: 1024MB
-    ports: 
+    ports:
       - "5432:5432"
     environment:
       - POSTGRES_PASSWORD=password
@@ -29,5 +29,5 @@ services:
     # volumes:
     #   - postgres_data:/var/lib/postgresql/data
 
-# volumes:
-#   postgres_data:
+    # volumes:
+    #   postgres_data:
