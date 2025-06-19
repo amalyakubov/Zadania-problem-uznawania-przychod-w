@@ -27,7 +27,7 @@ pub enum Client {
     Company(CompanyClient),
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "type")]
 pub enum ClientId {
     #[serde(rename = "individual")]

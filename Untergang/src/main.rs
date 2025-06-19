@@ -27,12 +27,16 @@ async fn main() {
     // build our application with a route
     let app = Router::new()
         .route("/health", get(|| async { "Status: OK" }))
+        // POST /client
         .route("/client", post(handler::create_client))
+        // DELETE /client
         .route("/client", delete(handler::delete_client))
+        // PUT /client TODO: add update functionality
         .route(
             "/client",
             put(move |Json(client): Json<Client>| async move { (StatusCode::OK, Json(client)) }),
         )
+        .route("/contract", post(handler::create_contract))
         .with_state(pool);
 
     // run our app with hyper, listening globally on port 3000
