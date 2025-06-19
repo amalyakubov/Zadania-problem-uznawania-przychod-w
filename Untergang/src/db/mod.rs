@@ -198,3 +198,39 @@ pub async fn create_contract_in_db(
     }
     Ok(())
 }
+
+pub async fn check_if_client_has_contract_for_product(
+    pool: &Pool<Postgres>,
+    client_id: ClientId,
+    product_id: i32,
+) -> Result<bool, sqlx::Error> {
+    match client_id {
+        ClientId::Individual(pesel) => {
+            let result = sqlx::query_scalar::<_, bool>(
+                "SELECT 1 as found FROM private_contract WHERE client_id = $1 AND product_id = $2 AND is_deleted = FALSE",
+            )
+            .bind(pesel)
+            .bind(product_id)
+            .fetch_optional(pool)
+            .await?;
+
+            match result {
+                Some(_) => Ok(true),
+                None => Ok(false),
+            }
+        }
+        ClientId::Company(krs) => {
+            let result = sqlx::query_scalar::<_, bool>(
+                "SELECT 1 as found FROM corporate_contract WHERE client_id = $1 AND product_id = $2 AND is_deleted = FALSE",
+            )
+            .bind(krs)
+            .bind(product_id)
+            .fetch_optional(pool)
+            .await?;
+            match result {
+                Some(_) => Ok(true),
+                None => Ok(false),
+            }
+        }
+    }
+}

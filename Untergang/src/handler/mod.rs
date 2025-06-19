@@ -8,8 +8,8 @@ use sqlx::{Pool, Postgres};
 use crate::{
     client::{Client, ClientId},
     db::{
-        check_product_and_client_exist, create_contract_in_db, find_discounts_for_client,
-        get_price_for_product,
+        check_if_client_has_contract_for_product, check_product_and_client_exist,
+        create_contract_in_db, find_discounts_for_client, get_price_for_product,
     },
 };
 
@@ -150,6 +150,27 @@ pub async fn create_contract(
     State(pool): State<Pool<Postgres>>,
     Json(purchase_request): Json<PurchaseRequest>,
 ) -> Result<(StatusCode, String), (StatusCode, String)> {
+    // check if the client hasn't already ordered the product
+    let client_has_contract = check_if_client_has_contract_for_product(
+        &pool,
+        purchase_request.client_id.clone(),
+        purchase_request.product_id,
+    )
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to check if client has contract".to_string(),
+        )
+    })?;
+
+    if client_has_contract {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Client already has contract for this product".to_string(),
+        ));
+    }
+
     // check if product and client exist
     let (product_exists, client_exists) = check_product_and_client_exist(
         &pool,
