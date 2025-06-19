@@ -1,6 +1,7 @@
 use axum::{
     extract::{Json, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
@@ -13,13 +14,35 @@ use crate::{
     },
 };
 
+pub enum AppError {
+    BadRequest(String),
+    InternalServerError(String),
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, error_message) = match self {
+            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            AppError::InternalServerError(msg) => {
+                eprintln!("Internal Server Error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "An internal server error occurred".to_string(),
+                )
+            }
+        };
+
+        (status, error_message).into_response()
+    }
+}
+
 pub async fn create_client(
     State(pool): State<Pool<Postgres>>,
     Json(client): Json<Client>,
-) -> Result<(StatusCode, String), (StatusCode, String)> {
-    match client {
+) -> Result<(StatusCode, String), AppError> {
+    let result = match client {
         Client::Individual(individual) => {
-            let result = sqlx::query!(
+            sqlx::query!(
                 "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) VALUES ($1, $2, $3, $4, $5)",
                 individual.first_name,
                 individual.last_name,
@@ -28,17 +51,10 @@ pub async fn create_client(
                 individual.pesel,
             )
             .execute(&pool)
-            .await;
-            match result {
-                Ok(_) => Ok((StatusCode::CREATED, "Client created".to_string())),
-                Err(_) => Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to create client".to_string(),
-                )),
-            }
+            .await
         }
         Client::Company(company) => {
-            let result = sqlx::query!(
+            sqlx::query!(
                 "INSERT INTO company_client (name, address, email, phone_number, krs) VALUES ($1, $2, $3, $4, $5)",
                 company.name,
                 company.address,
@@ -47,15 +63,16 @@ pub async fn create_client(
                 company.krs,
             )
             .execute(&pool)
-            .await;
-            match result {
-                Ok(_) => Ok((StatusCode::CREATED, "Client created".to_string())),
-                Err(_) => Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to create client".to_string(),
-                )),
-            }
+            .await
         }
+    };
+
+    match result {
+        Ok(_) => Ok((StatusCode::CREATED, "Client created".to_string())),
+        Err(e) => Err(AppError::InternalServerError(format!(
+            "Failed to create client: {}",
+            e
+        ))),
     }
 }
 
@@ -63,27 +80,21 @@ pub async fn create_client(
 pub async fn delete_client(
     State(pool): State<Pool<Postgres>>,
     Json(client_id): Json<ClientId>,
-) -> Result<(StatusCode, String), (StatusCode, String)> {
+) -> Result<(StatusCode, String), AppError> {
     match client_id {
         ClientId::Individual(pesel) => {
-            let result = sqlx::query!(
+            sqlx::query!(
                 r#"UPDATE personal_client
                  SET is_deleted = true, first_name = null, last_name = null, email = null, phone_number = null, pesel = null, created_at = null
                  WHERE pesel = $1"#,
                 pesel,
             )
             .execute(&pool)
-            .await;
-            match result {
-                Ok(_) => Ok((StatusCode::OK, "Client deleted".to_string())),
-                Err(_) => Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to delete client".to_string(),
-                )),
-            }
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to delete client: {}", e)))?;
+            Ok((StatusCode::OK, "Client deleted".to_string()))
         }
-        ClientId::Company(_krs) => Err((
-            StatusCode::BAD_REQUEST,
+        ClientId::Company(_krs) => Err(AppError::BadRequest(
             "Failed to delete client: coroprate clients are unable to be deleted".to_string(),
         )),
     }
@@ -93,10 +104,10 @@ pub async fn delete_client(
 pub async fn update_client(
     State(pool): State<Pool<Postgres>>,
     Json(client): Json<Client>,
-) -> Result<(StatusCode, String), (StatusCode, String)> {
-    match client {
+) -> Result<(StatusCode, String), AppError> {
+    let result = match client {
         Client::Individual(individual) => {
-            let result = sqlx::query!(
+            sqlx::query!(
                 "UPDATE personal_client SET first_name = $1, last_name = $2, email = $3, phone_number = $4 WHERE pesel = $5",
                 individual.first_name,
                 individual.last_name,
@@ -105,17 +116,10 @@ pub async fn update_client(
                 individual.pesel,
             )
             .execute(&pool)
-            .await;
-            match result {
-                Ok(_) => Ok((StatusCode::OK, "Client updated".to_string())),
-                Err(_) => Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to update client".to_string(),
-                )),
-            }
+            .await
         }
         Client::Company(company) => {
-            let result = sqlx::query!("UPDATE company_client SET name = $1, address = $2, email = $3, phone_number = $4 WHERE krs = $5",
+            sqlx::query!("UPDATE company_client SET name = $1, address = $2, email = $3, phone_number = $4 WHERE krs = $5",
                 company.name,
                 company.address,
                 company.email,
@@ -123,15 +127,16 @@ pub async fn update_client(
                 company.krs,
             )
             .execute(&pool)
-            .await;
-            match result {
-                Ok(_) => Ok((StatusCode::OK, "Client updated".to_string())),
-                Err(_) => Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to update client".to_string(),
-                )),
-            }
+            .await
         }
+    };
+
+    match result {
+        Ok(_) => Ok((StatusCode::OK, "Client updated".to_string())),
+        Err(e) => Err(AppError::InternalServerError(format!(
+            "Failed to update client: {}",
+            e
+        ))),
     }
 }
 
@@ -149,7 +154,7 @@ pub struct PurchaseRequest {
 pub async fn create_contract(
     State(pool): State<Pool<Postgres>>,
     Json(purchase_request): Json<PurchaseRequest>,
-) -> Result<(StatusCode, String), (StatusCode, String)> {
+) -> Result<(StatusCode, String), AppError> {
     // check if the client hasn't already ordered the product
     let client_has_contract = check_if_client_has_contract_for_product(
         &pool,
@@ -157,16 +162,12 @@ pub async fn create_contract(
         purchase_request.product_id,
     )
     .await
-    .map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to check if client has contract".to_string(),
-        )
+    .map_err(|e| {
+        AppError::InternalServerError(format!("Failed to check if client has contract: {}", e))
     })?;
 
     if client_has_contract {
-        return Err((
-            StatusCode::BAD_REQUEST,
+        return Err(AppError::BadRequest(
             "Client already has contract for this product".to_string(),
         ));
     }
@@ -178,21 +179,18 @@ pub async fn create_contract(
         purchase_request.client_id.clone(),
     )
     .await
-    .map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to check if product and client exist".to_string(),
-        )
+    .map_err(|e| {
+        AppError::InternalServerError(format!(
+            "Failed to check if product and client exist: {}",
+            e
+        ))
     })?;
 
     if !product_exists {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Product does not exist".to_string(),
-        ));
+        return Err(AppError::BadRequest("Product does not exist".to_string()));
     }
     if !client_exists {
-        return Err((StatusCode::BAD_REQUEST, "Client does not exist".to_string()));
+        return Err(AppError::BadRequest("Client does not exist".to_string()));
     }
 
     // get discount for client
@@ -202,26 +200,16 @@ pub async fn create_contract(
         purchase_request.client_id.clone(),
     )
     .await
-    .map_err(|error: sqlx::Error| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get discount: {}", error),
-        )
-    })?
+    .map_err(|e| AppError::InternalServerError(format!("Failed to get discount: {}", e)))?
     .unwrap_or(0.0);
 
     let price = get_price_for_product(&pool, purchase_request.product_id)
         .await
-        .map_err(|error| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get price: {:?}", error),
-            )
-        })?;
+        .map_err(|e| AppError::InternalServerError(format!("Failed to get price: {:?}", e)))?;
 
     let final_price = price * (1.0 - discount);
 
-    match create_contract_in_db(
+    create_contract_in_db(
         &pool,
         final_price,
         purchase_request.product_id,
@@ -231,11 +219,7 @@ pub async fn create_contract(
         purchase_request.years_supported,
     )
     .await
-    {
-        Ok(_) => Ok((StatusCode::CREATED, "Contract created".to_string())),
-        Err(error) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create contract: {}", error),
-        )),
-    }
+    .map_err(|e| AppError::InternalServerError(format!("Failed to create contract: {}", e)))?;
+
+    Ok((StatusCode::CREATED, "Contract created".to_string()))
 }
