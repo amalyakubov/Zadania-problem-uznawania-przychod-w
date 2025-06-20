@@ -3,14 +3,16 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use bigdecimal::{BigDecimal, FromPrimitive};
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
 
 use crate::{
     client::{Client, ClientId},
     db::{
-        check_if_client_has_contract_for_product, check_product_and_client_exist,
-        create_contract_in_db, find_discounts_for_client, get_price_for_product,
+        check_if_client_exists, check_if_client_has_contract_for_product,
+        check_product_and_client_exist, create_contract_in_db, find_discounts_for_client,
+        get_contract_by_id, get_price_for_product, pay_for_contract,
     },
 };
 
@@ -222,4 +224,96 @@ pub async fn create_contract(
     .map_err(|e| AppError::InternalServerError(format!("Failed to create contract: {}", e)))?;
 
     Ok((StatusCode::CREATED, "Contract created".to_string()))
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct InstallmentsPayment {
+    contract_id: i32,
+    client_id: ClientId,
+    amount_per_installment: f64,
+    amount_of_installments: i32,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct SinglePayment {
+    contract_id: i32,
+    amount: f64,
+    client_id: ClientId,
+}
+
+#[derive(Clone, serde::Deserialize)]
+enum PaymentRequest {
+    Installments(InstallmentsPayment),
+    SinglePayment(SinglePayment),
+}
+
+pub async fn create_payment(
+    State(pool): State<Pool<Postgres>>,
+    Json(payment_request): Json<PaymentRequest>,
+) -> Result<(StatusCode, String), AppError> {
+    let (client_id, contract_id) = match payment_request.clone() {
+        PaymentRequest::Installments(installments_payment) => (
+            installments_payment.client_id.clone(),
+            installments_payment.contract_id,
+        ),
+        PaymentRequest::SinglePayment(single_payment) => {
+            (single_payment.client_id, single_payment.contract_id)
+        }
+    };
+
+    let client_exists = check_if_client_exists(&pool, &client_id)
+        .await
+        .map_err(|e| {
+            AppError::InternalServerError(format!("Failed to check if client exists: {}", e))
+        })?;
+    if !client_exists {
+        return Err(AppError::BadRequest("Client does not exist".to_string()));
+    }
+
+    let contract_exists =
+        check_if_client_has_contract_for_product(&pool, client_id.clone(), contract_id.clone())
+            .await
+            .map_err(|e| {
+                AppError::InternalServerError(format!("Failed to check if contract exists: {}", e))
+            })?;
+    if !contract_exists {
+        return Err(AppError::BadRequest("Contract does not exist".to_string()));
+    }
+
+    let contract = get_contract_by_id(&pool, client_id.clone(), contract_id)
+        .await
+        .map_err(|e| AppError::InternalServerError(format!("Failed to get contract: {}", e)))?;
+
+    match payment_request {
+        PaymentRequest::Installments(installments_payment) => {
+            // check if the total amount to be paid is equal to the contract price
+            if BigDecimal::from_f64(installments_payment.amount_per_installment)
+                .expect("Failed to convert amount per installment to BigDecimal")
+                * BigDecimal::from_i32(installments_payment.amount_of_installments)
+                    .expect("Failed to convert amount of installments to BigDecimal")
+                != contract.price
+            {
+                return Err(AppError::BadRequest(
+                    "Amount does not match contract price".to_string(),
+                ));
+            }
+
+            pay_for_contract(pool, contract_id, client_id)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!("Failed to pay for contract: {}", e))
+                })?;
+
+            Ok((StatusCode::OK, "Payment successful".to_string()))
+        }
+        PaymentRequest::SinglePayment(single_payment) => {
+            pay_for_contract(pool, contract_id, client_id)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!("Failed to pay for contract: {}", e))
+                })?;
+
+            Ok((StatusCode::OK, "Payment successful".to_string()))
+        }
+    }
 }

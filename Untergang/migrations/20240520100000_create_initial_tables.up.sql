@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS private_contract (
     end_date TIMESTAMP NOT NULL,
     years_supported INTEGER NOT NULL,
     is_signed BOOLEAN NOT NULL DEFAULT FALSE,
+    is_paid BOOLEAN NOT NULL DEFAULT FALSE,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE
 );
 
@@ -60,5 +61,6 @@ CREATE TABLE IF NOT EXISTS corporate_contract (
     end_date TIMESTAMP NOT NULL,
     years_supported INTEGER NOT NULL,
     is_signed BOOLEAN NOT NULL DEFAULT FALSE,
+    is_paid BOOLEAN NOT NULL DEFAULT FALSE,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE
 ); 

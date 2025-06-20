@@ -1,4 +1,4 @@
-use crate::client::ClientId;
+use crate::client::{ClientId, Contract};
 use bigdecimal::{BigDecimal, FromPrimitive};
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
@@ -19,10 +19,10 @@ pub async fn connect_db() -> Result<Pool<Postgres>, sqlx::Error> {
 
 pub async fn check_if_product_exists(
     pool: &Pool<Postgres>,
-    product_id: i32,
+    product_id: &i32,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query_scalar::<_, bool>("SELECT 1 as found FROM software WHERE id = $1")
-        .bind(product_id)
+        .bind(*product_id)
         .fetch_optional(pool)
         .await?;
     match result {
@@ -33,7 +33,7 @@ pub async fn check_if_product_exists(
 
 pub async fn check_if_client_exists(
     pool: &Pool<Postgres>,
-    client_id: ClientId,
+    client_id: &ClientId,
 ) -> Result<bool, sqlx::Error> {
     match client_id {
         ClientId::Individual(pesel) => {
@@ -63,8 +63,8 @@ pub async fn check_product_and_client_exist(
     client_id: ClientId,
 ) -> Result<(bool, bool), sqlx::Error> {
     let (product_exists, client_exists) = tokio::join!(
-        check_if_product_exists(pool, product_id),
-        check_if_client_exists(pool, client_id)
+        check_if_product_exists(pool, &product_id),
+        check_if_client_exists(pool, &client_id)
     );
 
     Ok((product_exists?, client_exists?))
@@ -230,6 +230,98 @@ pub async fn check_if_client_has_contract_for_product(
             match result {
                 Some(_) => Ok(true),
                 None => Ok(false),
+            }
+        }
+    }
+}
+
+pub async fn get_contract_by_id(
+    pool: &Pool<Postgres>,
+    client_id: ClientId,
+    contract_id: i32,
+) -> Result<Contract, sqlx::Error> {
+    match client_id {
+        ClientId::Individual(pesel) => {
+            let result = sqlx::query!(
+                "SELECT id, price, product_id, client_id, start_date, end_date, years_supported FROM private_contract WHERE id = $1 AND client_id = $2 AND is_deleted = FALSE",
+                contract_id,
+                pesel,
+            )
+            .fetch_optional(pool)
+            .await?;
+
+            match result {
+                Some(contract) => Ok(Contract {
+                    id: contract.id,
+                    price: contract.price,
+                    product_id: contract
+                        .product_id
+                        .expect("Product ID not found on the contract"),
+                    client_id: ClientId::Individual(pesel),
+                    start_date: DateTime::from_naive_utc_and_offset(contract.start_date, Utc),
+                    end_date: DateTime::from_naive_utc_and_offset(contract.end_date, Utc),
+                    years_supported: contract.years_supported,
+                }),
+                None => Err(sqlx::Error::RowNotFound),
+            }
+        }
+        ClientId::Company(krs) => {
+            let result = sqlx::query!(
+                "SELECT id, price, product_id, client_id, start_date, end_date, years_supported FROM corporate_contract WHERE id = $1 AND client_id = $2 AND is_deleted = FALSE",
+                contract_id,
+                krs,
+            )
+            .fetch_optional(pool)
+            .await?;
+
+            match result {
+                Some(contract) => Ok(Contract {
+                    id: contract.id,
+                    price: contract.price,
+                    product_id: contract
+                        .product_id
+                        .expect("Product ID not found on the contract"),
+                    client_id: ClientId::Company(krs),
+                    start_date: DateTime::from_naive_utc_and_offset(contract.start_date, Utc),
+                    end_date: DateTime::from_naive_utc_and_offset(contract.end_date, Utc),
+                    years_supported: contract.years_supported,
+                }),
+                None => Err(sqlx::Error::RowNotFound),
+            }
+        }
+    }
+}
+
+pub async fn pay_for_contract(
+    pool: Pool<Postgres>,
+    contract_id: i32,
+    client_id: ClientId,
+) -> Result<(), sqlx::Error> {
+    match client_id {
+        ClientId::Individual(pesel) => {
+            match sqlx::query!(
+                "UPDATE private_contract SET is_paid = TRUE WHERE id = $1 AND client_id = $2",
+                contract_id,
+                pesel
+            )
+            .execute(&pool)
+            .await
+            {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
+        ClientId::Company(krs) => {
+            match sqlx::query!(
+                "UPDATE corporate_contract SET is_paid = TRUE WHERE id = $1 AND client_id = $2",
+                contract_id,
+                krs
+            )
+            .execute(&pool)
+            .await
+            {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
             }
         }
     }

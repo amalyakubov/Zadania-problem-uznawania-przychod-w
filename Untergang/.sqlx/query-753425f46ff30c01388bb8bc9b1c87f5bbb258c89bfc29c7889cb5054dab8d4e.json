@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE private_contract SET is_paid = TRUE WHERE id = $1 AND client_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "753425f46ff30c01388bb8bc9b1c87f5bbb258c89bfc29c7889cb5054dab8d4e"
+}

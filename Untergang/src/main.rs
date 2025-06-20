@@ -37,6 +37,7 @@ async fn main() {
             put(move |Json(client): Json<Client>| async move { (StatusCode::OK, Json(client)) }),
         )
         .route("/contract", post(handler::create_contract))
+        .route("/payment", post(handler::create_payment))
         .with_state(pool);
 
     // run our app with hyper, listening globally on port 3000

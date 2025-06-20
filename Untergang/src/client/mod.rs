@@ -1,3 +1,5 @@
+use bigdecimal::BigDecimal;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -34,4 +36,15 @@ pub enum ClientId {
     Individual(String),
     #[serde(rename = "company")]
     Company(String),
+}
+
+#[derive(Debug, Deserialize, Serialize, sqlx::FromRow)]
+pub struct Contract {
+    pub id: i32,
+    pub price: BigDecimal,
+    pub product_id: i32,
+    pub client_id: ClientId,
+    pub start_date: DateTime<Utc>,
+    pub end_date: DateTime<Utc>,
+    pub years_supported: i32,
 }
