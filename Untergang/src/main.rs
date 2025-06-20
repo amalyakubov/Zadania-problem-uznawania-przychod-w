@@ -11,6 +11,9 @@ use client::Client;
 mod db;
 use db::connect_db;
 
+#[cfg(test)]
+mod tests;
+
 mod handler;
 
 #[tokio::main]

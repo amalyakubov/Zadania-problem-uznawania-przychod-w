@@ -1,11 +1,9 @@
 use crate::client::{ClientId, Contract};
-use bigdecimal::{BigDecimal, FromPrimitive};
+use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
 
 pub async fn connect_db() -> Result<Pool<Postgres>, sqlx::Error> {
-    // For dev use only:
-    // let db_url = "postgres://postgres:password@localhost:5432/Untergang";
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool: Pool<Postgres> = match Pool::connect(&db_url).await {
         Ok(pool) => pool,
@@ -21,14 +19,12 @@ pub async fn check_if_product_exists(
     pool: &Pool<Postgres>,
     product_id: &i32,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query_scalar::<_, bool>("SELECT 1 as found FROM software WHERE id = $1")
-        .bind(*product_id)
-        .fetch_optional(pool)
-        .await?;
-    match result {
-        Some(_) => Ok(true),
-        None => Ok(false),
-    }
+    let result =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM software WHERE id = $1)")
+            .bind(*product_id)
+            .fetch_one(pool)
+            .await?;
+    Ok(result)
 }
 
 pub async fn check_if_client_exists(
@@ -38,21 +34,21 @@ pub async fn check_if_client_exists(
     match client_id {
         ClientId::Individual(pesel) => {
             let result = sqlx::query_scalar::<_, bool>(
-                "SELECT 1 as found FROM personal_client WHERE pesel = $1 AND is_deleted = FALSE",
+                "SELECT EXISTS(SELECT 1 FROM personal_client WHERE pesel = $1 AND is_deleted = FALSE)",
             )
             .bind(pesel)
-            .fetch_optional(pool)
+            .fetch_one(pool)
             .await?;
-            Ok(result.is_some())
+            Ok(result)
         }
         ClientId::Company(krs) => {
             let result = sqlx::query_scalar::<_, bool>(
-                "SELECT 1 as found FROM company_client WHERE krs = $1 AND is_deleted = FALSE",
+                "SELECT EXISTS(SELECT 1 FROM company_client WHERE krs = $1 AND is_deleted = FALSE)",
             )
             .bind(krs)
-            .fetch_optional(pool)
+            .fetch_one(pool)
             .await?;
-            Ok(result.is_some())
+            Ok(result)
         }
     }
 }
@@ -81,11 +77,6 @@ pub async fn find_discounts_for_client(
     .bind(product_id)
     .fetch_optional(pool)
     .await?;
-
-    match highest_discount {
-        Some(discount) => Ok(discount),
-        None => Err(sqlx::Error::RowNotFound),
-    };
 
     let mut additional_discount = None;
     match client_id {
@@ -145,7 +136,7 @@ pub async fn get_price_for_product(
     pool: &Pool<Postgres>,
     product_id: i32,
 ) -> Result<f64, (sqlx::Error, String)> {
-    let result = sqlx::query_scalar::<_, f64>("SELECT price FROM software WHERE id = $1")
+    let result = sqlx::query_scalar::<_, BigDecimal>("SELECT price FROM software WHERE id = $1")
         .bind(product_id)
         .fetch_optional(pool)
         .await
@@ -156,7 +147,13 @@ pub async fn get_price_for_product(
             )
         })?;
     match result {
-        Some(price) => Ok(price),
+        Some(price) => {
+            // Convert BigDecimal to f64
+            price.to_f64().ok_or((
+                sqlx::Error::Decode("Failed to convert price to f64".into()),
+                "Failed to convert price to f64".to_string(),
+            ))
+        }
         None => Err((
             sqlx::Error::RowNotFound,
             "Failed to determine the price of the product".to_string(),
@@ -207,30 +204,23 @@ pub async fn check_if_client_has_contract_for_product(
     match client_id {
         ClientId::Individual(pesel) => {
             let result = sqlx::query_scalar::<_, bool>(
-                "SELECT 1 as found FROM private_contract WHERE client_id = $1 AND product_id = $2 AND is_deleted = FALSE",
+                "SELECT EXISTS(SELECT 1 FROM private_contract WHERE client_id = $1 AND product_id = $2 AND is_deleted = FALSE)",
             )
             .bind(pesel)
             .bind(product_id)
-            .fetch_optional(pool)
+            .fetch_one(pool)
             .await?;
-
-            match result {
-                Some(_) => Ok(true),
-                None => Ok(false),
-            }
+            Ok(result)
         }
         ClientId::Company(krs) => {
             let result = sqlx::query_scalar::<_, bool>(
-                "SELECT 1 as found FROM corporate_contract WHERE client_id = $1 AND product_id = $2 AND is_deleted = FALSE",
+                "SELECT EXISTS(SELECT 1 FROM corporate_contract WHERE client_id = $1 AND product_id = $2 AND is_deleted = FALSE)",
             )
             .bind(krs)
             .bind(product_id)
-            .fetch_optional(pool)
+            .fetch_one(pool)
             .await?;
-            match result {
-                Some(_) => Ok(true),
-                None => Ok(false),
-            }
+            Ok(result)
         }
     }
 }

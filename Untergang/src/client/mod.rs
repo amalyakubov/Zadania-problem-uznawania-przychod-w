@@ -30,7 +30,7 @@ pub enum Client {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "value")]
 pub enum ClientId {
     #[serde(rename = "individual")]
     Individual(String),

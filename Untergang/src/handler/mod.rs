@@ -85,15 +85,17 @@ pub async fn delete_client(
 ) -> Result<(StatusCode, String), AppError> {
     match client_id {
         ClientId::Individual(pesel) => {
-            sqlx::query!(
+            sqlx::query(
                 r#"UPDATE personal_client
-                 SET is_deleted = true, first_name = null, last_name = null, email = null, phone_number = null, pesel = null, created_at = null
+                 SET is_deleted = true
                  WHERE pesel = $1"#,
-                pesel,
             )
+            .bind(pesel)
             .execute(&pool)
             .await
-            .map_err(|e| AppError::InternalServerError(format!("Failed to delete client: {}", e)))?;
+            .map_err(|e| {
+                AppError::InternalServerError(format!("Failed to delete client: {}", e))
+            })?;
             Ok((StatusCode::OK, "Client deleted".to_string()))
         }
         ClientId::Company(_krs) => Err(AppError::BadRequest(
@@ -270,19 +272,15 @@ pub async fn create_payment(
         return Err(AppError::BadRequest("Client does not exist".to_string()));
     }
 
-    let contract_exists =
-        check_if_client_has_contract_for_product(&pool, client_id.clone(), contract_id.clone())
-            .await
-            .map_err(|e| {
-                AppError::InternalServerError(format!("Failed to check if contract exists: {}", e))
-            })?;
-    if !contract_exists {
-        return Err(AppError::BadRequest("Contract does not exist".to_string()));
-    }
-
+    // Try to get the contract - if it doesn't exist or doesn't belong to the client, this will fail
     let contract = get_contract_by_id(&pool, client_id.clone(), contract_id)
         .await
-        .map_err(|e| AppError::InternalServerError(format!("Failed to get contract: {}", e)))?;
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => AppError::BadRequest(
+                "Contract does not exist or does not belong to this client".to_string(),
+            ),
+            _ => AppError::InternalServerError(format!("Failed to get contract: {}", e)),
+        })?;
 
     match payment_request {
         PaymentRequest::Installments(installments_payment) => {
