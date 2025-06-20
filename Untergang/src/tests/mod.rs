@@ -553,4 +553,433 @@ mod endpoint_tests {
 
         Ok(())
     }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_create_client_duplicate_pesel_should_fail(pool: PgPool) -> sqlx::Result<()> {
+        let app = app(pool.clone()).await;
+
+        let client = json!({
+            "type": "individual",
+            "first_name": "John",
+            "last_name": "Doe",
+            "email": "john.doe@example.com",
+            "phone_number": "+48123456789",
+            "pesel": "12345678901"
+        });
+
+        // Create the client for the first time
+        let _response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/client")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&client).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Attempt to create the same client again
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/client")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&client).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_create_client_duplicate_krs_should_fail(pool: PgPool) -> sqlx::Result<()> {
+        let app = app(pool.clone()).await;
+
+        let client = json!({
+            "type": "company",
+            "name": "Test Company",
+            "address": "123 Test St",
+            "email": "test@company.com",
+            "phone_number": "+48123123123",
+            "krs": "1234567890"
+        });
+
+        // Create the client for the first time
+        let _response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/client")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&client).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Attempt to create the same client again
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/client")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&client).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_delete_non_existent_client_should_succeed(pool: PgPool) -> sqlx::Result<()> {
+        let app = app(pool.clone()).await;
+
+        let client_id = json!({
+            "type": "individual",
+            "value": "00000000000" // Non-existent PESEL
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/client")
+                    .method(Method::DELETE)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&client_id).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_update_company_client(pool: PgPool) -> sqlx::Result<()> {
+        // First create a company client
+        sqlx::query(
+            "INSERT INTO company_client (name, address, email, phone_number, krs) 
+             VALUES ('Old Company', 'Old Address', 'old@company.com', '+48111111111', '1111111111')",
+        )
+        .execute(&pool)
+        .await?;
+
+        let app = app(pool.clone()).await;
+
+        let updated_client = json!({
+            "type": "company",
+            "name": "New Company",
+            "address": "New Address",
+            "email": "new@company.com",
+            "phone_number": "+48222222222",
+            "krs": "1111111111"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/client")
+                    .method(Method::PUT)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&updated_client).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify the client was updated
+        let updated_name: String =
+            sqlx::query_scalar("SELECT name FROM company_client WHERE krs = '1111111111'")
+                .fetch_one(&pool)
+                .await?;
+
+        assert_eq!(updated_name, "New Company");
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_create_contract_for_company_client(pool: PgPool) -> sqlx::Result<()> {
+        setup_test_data(&pool).await?;
+
+        // Create a company client
+        sqlx::query(
+            "INSERT INTO company_client (name, address, email, phone_number, krs) 
+             VALUES ('Company Contract', 'Test Address', 'cc@example.com', '+48444555666', '4444444444')",
+        )
+        .execute(&pool)
+        .await?;
+
+        let app = app(pool.clone()).await;
+
+        let purchase_request = json!({
+            "client_id": {
+                "type": "company",
+                "value": "4444444444"
+            },
+            "start_date": "2024-01-01T00:00:00Z",
+            "end_date": "2025-01-01T00:00:00Z",
+            "product_id": 1,
+            "years_supported": 1
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/contract")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&purchase_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_create_contract_non_existent_client_should_fail(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        setup_test_data(&pool).await?;
+        let app = app(pool.clone()).await;
+
+        let purchase_request = json!({
+            "client_id": {
+                "type": "individual",
+                "value": "00000000000" // Non-existent client
+            },
+            "start_date": "2024-01-01T00:00:00Z",
+            "end_date": "2025-01-01T00:00:00Z",
+            "product_id": 1,
+            "years_supported": 1
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/contract")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&purchase_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_create_contract_non_existent_product_should_fail(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        // Create a client first
+        sqlx::query(
+            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
+             VALUES ('Contract', 'Test', 'contract@example.com', '+48555666777', '22222222222')",
+        )
+        .execute(&pool)
+        .await?;
+
+        let app = app(pool.clone()).await;
+
+        let purchase_request = json!({
+            "client_id": {
+                "type": "individual",
+                "value": "22222222222"
+            },
+            "start_date": "2024-01-01T00:00:00Z",
+            "end_date": "2025-01-01T00:00:00Z",
+            "product_id": 999, // Non-existent product
+            "years_supported": 1
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/contract")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&purchase_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_create_payment_non_existent_contract_should_fail(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        setup_test_data(&pool).await?;
+
+        // Create a client
+        sqlx::query(
+            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
+             VALUES ('Payment', 'Test', 'payment@example.com', '+48777888999', '44444444444')",
+        )
+        .execute(&pool)
+        .await?;
+
+        let app = app(pool.clone()).await;
+
+        let payment_request = json!({
+            "SinglePayment": {
+                "contract_id": 999, // Non-existent contract
+                "amount": 1000.0,
+                "client_id": {
+                    "type": "individual",
+                    "value": "44444444444"
+                }
+            }
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/payment")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&payment_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_create_payment_for_already_paid_contract(pool: PgPool) -> sqlx::Result<()> {
+        setup_test_data(&pool).await?;
+
+        // Create a client and a paid contract
+        sqlx::query(
+            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
+             VALUES ('Paid', 'Contract', 'paid@example.com', '+48111000111', '77777777777')",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO private_contract (id, client_id, product_id, price, start_date, end_date, years_supported, is_paid) 
+             VALUES (4, '77777777777', 1, 1000.00, '2024-01-01', '2025-01-01', 1, TRUE)",
+        )
+        .execute(&pool)
+        .await?;
+
+        let app = app(pool.clone()).await;
+
+        let payment_request = json!({
+            "SinglePayment": {
+                "contract_id": 4,
+                "amount": 1000.0,
+                "client_id": {
+                    "type": "individual",
+                    "value": "77777777777"
+                }
+            }
+        });
+
+        // The current implementation does not prevent paying for a contract that is already paid.
+        // It will just update the `is_paid` flag to TRUE again. So we expect an OK status.
+        // A more robust implementation might return a BadRequest.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/payment")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&payment_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_create_payment_installments_wrong_amount_should_fail(
+        pool: PgPool,
+    ) -> sqlx::Result<()> {
+        setup_test_data(&pool).await?;
+
+        // Create a client and contract
+        sqlx::query(
+            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
+             VALUES ('Installment', 'Fail', 'inst-fail@example.com', '+48987987987', '88888888888')",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO private_contract (id, client_id, product_id, price, start_date, end_date, years_supported) 
+             VALUES (5, '88888888888', 1, 1200.00, '2024-01-01', '2025-01-01', 1)",
+        )
+        .execute(&pool)
+        .await?;
+
+        let app = app(pool.clone()).await;
+
+        let payment_request = json!({
+            "Installments": {
+                "contract_id": 5,
+                "client_id": {
+                    "type": "individual",
+                    "value": "88888888888"
+                },
+                "amount_per_installment": 100.0,
+                "amount_of_installments": 10 // Should be 12
+            }
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/payment")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&payment_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        Ok(())
+    }
 }
