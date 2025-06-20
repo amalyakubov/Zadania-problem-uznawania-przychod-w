@@ -39,9 +39,12 @@ CREATE TABLE IF NOT EXISTS discount (
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE
 );
 
-CREATE TABLE IF NOT EXISTS private_contract (
+-- Create a unified contracts table
+CREATE TABLE IF NOT EXISTS contract (
     id SERIAL PRIMARY KEY,
-    client_id VARCHAR(11) REFERENCES personal_client(pesel),
+    contract_type TEXT NOT NULL CHECK (contract_type IN ('private', 'corporate')),
+    personal_client_pesel VARCHAR(11) REFERENCES personal_client(pesel),
+    company_client_krs VARCHAR(10) REFERENCES company_client(krs),
     product_id INTEGER REFERENCES software(id),
     price NUMERIC(10, 2) NOT NULL,
     start_date TIMESTAMP NOT NULL,
@@ -49,27 +52,18 @@ CREATE TABLE IF NOT EXISTS private_contract (
     years_supported INTEGER NOT NULL,
     is_signed BOOLEAN NOT NULL DEFAULT FALSE,
     is_paid BOOLEAN NOT NULL DEFAULT FALSE,
-    is_deleted BOOLEAN NOT NULL DEFAULT FALSE
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    CONSTRAINT check_client_type CHECK (
+        (contract_type = 'private' AND personal_client_pesel IS NOT NULL AND company_client_krs IS NULL) OR
+        (contract_type = 'corporate' AND personal_client_pesel IS NULL AND company_client_krs IS NOT NULL)
+    )
 );
 
-CREATE TABLE IF NOT EXISTS corporate_contract (
-    id SERIAL PRIMARY KEY,
-    client_id VARCHAR(10) REFERENCES company_client(krs),
-    product_id INTEGER REFERENCES software(id),
-    price NUMERIC(10, 2) NOT NULL,
-    start_date TIMESTAMP NOT NULL,
-    end_date TIMESTAMP NOT NULL,
-    years_supported INTEGER NOT NULL,
-    is_signed BOOLEAN NOT NULL DEFAULT FALSE,
-    is_paid BOOLEAN NOT NULL DEFAULT FALSE,
-    is_deleted BOOLEAN NOT NULL DEFAULT FALSE
-); 
-
-
+-- Then payment table becomes simple
 CREATE TABLE IF NOT EXISTS payment (
     id SERIAL PRIMARY KEY, 
-    contract_id INTEGER REFERENCES private_contract(id) OR corporate_contract(id),
+    contract_id INTEGER REFERENCES contract(id),
     amount NUMERIC(10, 2) NOT NULL,
     payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE
-)
+);

@@ -323,17 +323,26 @@ pub async fn get_payments_for_contract(
     pool: &Pool<Postgres>,
     contract_id: i32,
 ) -> Result<Vec<Payment>, AppError> {
-    let result = match sqlx::query!(
+    let result = sqlx::query!(
         "SELECT id, contract_id, amount, payment_date, is_deleted FROM payment WHERE contract_id = $1",
         contract_id
     )
         .fetch_all(pool)
-        .await? {
-            Ok(payments) => payments,
-            Err(e) =>  return Err(AppError::InternalServerError(format!("Failed to get payments: {}", e))),
-        };
+        .await
+        .map_err(|e| {
+            AppError::InternalServerError(format!("Failed to get payments: {}", e))
+        })?;
 
-    Ok(result)
+    Ok(result
+        .into_iter()
+        .map(|p| Payment {
+            id: p.id,
+            contract_id: p.contract_id.expect("Contract ID not found on the payment"),
+            amount: p.amount,
+            payment_date: DateTime::from_naive_utc_and_offset(p.payment_date, Utc),
+            is_deleted: p.is_deleted,
+        })
+        .collect())
 }
 
 pub mod payments {
@@ -364,10 +373,14 @@ pub mod payments {
         contract_id: i32,
         amount: f64,
     ) -> Result<(), AppError> {
+        let amount_decimal = BigDecimal::from_f64(amount).ok_or(AppError::InternalServerError(
+            "Invalid amount format".to_string(),
+        ))?;
+
         match sqlx::query!(
             "INSERT INTO payment (contract_id, amount) VALUES ($1, $2)",
             contract_id,
-            amount
+            amount_decimal
         )
         .execute(pool)
         .await
