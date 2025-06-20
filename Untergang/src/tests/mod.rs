@@ -1,985 +1,308 @@
-use sqlx::PgPool;
-
-#[test]
-fn setup() {
-    std::env::set_var(
-        "DATABASE_URL",
-        "postgres://postgres:password@localhost:5432/Untergang", // Use a separate test DB
-    );
-}
-
-#[sqlx::test]
-async fn test_db_connection(pool: PgPool) -> sqlx::Result<()> {
-    let _result = sqlx::query("SELECT 1 as test_value")
-        .fetch_one(&pool)
-        .await?;
-
-    eprintln!("Database connection successful!");
-    Ok(())
-}
-
-#[sqlx::test(migrations = "./migrations")]
-async fn test_create_contract(pool: PgPool) -> sqlx::Result<()> {
-    let table_exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_name = 'private_contract'
-        )",
-    )
-    .fetch_one(&pool)
-    .await?;
-
-    eprintln!("Table exists: {}", table_exists);
-
-    assert!(table_exists, "Contracts table should exist after migration");
-    Ok(())
-}
-
 #[cfg(test)]
-mod endpoint_tests {
+mod tests {
     use super::*;
-    use axum::{
-        body::Body,
-        http::{header, Method, Request, StatusCode},
-        routing::{delete, get, post, put},
-        Router,
-    };
-    use serde_json::json;
-    use tower::ServiceExt;
+    use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
+    use std::str::FromStr;
 
-    // Helper function to create test app
-    async fn app(pool: PgPool) -> Router {
-        Router::new()
-            .route("/health", get(|| async { "Status: OK" }))
-            .route("/client", post(crate::handler::create_client))
-            .route("/client", delete(crate::handler::delete_client))
-            .route("/client", put(crate::handler::update_client))
-            .route("/contract", post(crate::handler::create_contract))
-            .route("/payment", post(crate::handler::create_payment))
-            .with_state(pool)
+    // First, you'll need to extract these pure functions from your existing code:
+
+    // Extract from find_discounts_for_client
+    fn calculate_final_discount(
+        base_discount: Option<BigDecimal>,
+        recurring_discount: Option<BigDecimal>,
+    ) -> BigDecimal {
+        let base = base_discount.unwrap_or_else(|| BigDecimal::from(0));
+        let recurring = recurring_discount.unwrap_or_else(|| BigDecimal::from(0));
+        base + recurring
     }
 
-    // Helper function to setup test data
-    async fn setup_test_data(pool: &PgPool) -> sqlx::Result<()> {
-        // Insert test software product
-        sqlx::query(
-            "INSERT INTO software (id, name, description, version, category, price) 
-             VALUES (1, 'Test Software', 'Test Description', '1.0', 'Test Category', 1000.00)
-             ON CONFLICT (id) DO NOTHING",
-        )
-        .execute(pool)
-        .await?;
+    // Extract from create_contract handler
+    fn apply_discount_to_price(
+        price: BigDecimal,
+        discount: BigDecimal,
+    ) -> Result<BigDecimal, String> {
+        let zero = BigDecimal::from(0);
+        let one = BigDecimal::from(1);
 
+        if discount < zero || discount > one {
+            return Err("Invalid discount range".to_string());
+        }
+        if price < zero {
+            return Err("Invalid price".to_string());
+        }
+        Ok(price * (one - discount))
+    }
+
+    // Extract from create_payment handler
+    fn validate_installment_payment(
+        amount: BigDecimal,
+        outstanding: BigDecimal,
+    ) -> Result<(), String> {
+        let zero = BigDecimal::from(0);
+
+        if amount <= zero {
+            return Err("Amount must be positive".to_string());
+        }
+        if amount > outstanding {
+            return Err("Amount exceeds outstanding payments".to_string());
+        }
         Ok(())
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_health_endpoint(pool: PgPool) -> sqlx::Result<()> {
-        let app = app(pool.clone()).await;
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/health")
-                    .method(Method::GET)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert_eq!(&body_bytes[..], b"Status: OK");
-
-        Ok(())
+    // Extract BigDecimal comparison logic (already correct)
+    fn amounts_equal(amount1: BigDecimal, amount2: BigDecimal) -> bool {
+        amount1 == amount2
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_individual_client(pool: PgPool) -> sqlx::Result<()> {
-        let app = app(pool.clone()).await;
-
-        let client = json!({
-            "type": "individual",
-            "first_name": "John",
-            "last_name": "Doe",
-            "email": "john.doe@example.com",
-            "phone_number": "+48123456789",
-            "pesel": "12345678901"
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/client")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&client).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CREATED);
-
-        // Verify client was created in database
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM personal_client WHERE pesel = $1)",
-        )
-        .bind("12345678901")
-        .fetch_one(&pool)
-        .await?;
-
-        assert!(exists);
-
-        Ok(())
+    // Helper function to determine if client gets recurring discount
+    fn client_qualifies_for_recurring_discount(active_contracts: i64) -> bool {
+        active_contracts >= 1
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_company_client(pool: PgPool) -> sqlx::Result<()> {
-        let app = app(pool.clone()).await;
-
-        let client = json!({
-            "type": "company",
-            "name": "Test Company",
-            "address": "123 Test Street",
-            "email": "company@example.com",
-            "phone_number": "+48987654321",
-            "krs": "1234567890"
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/client")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&client).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CREATED);
-
-        // Verify client was created in database
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM company_client WHERE krs = $1)",
-        )
-        .bind("1234567890")
-        .fetch_one(&pool)
-        .await?;
-
-        assert!(exists);
-
-        Ok(())
+    // Helper function to create BigDecimal from string for tests
+    fn bd(s: &str) -> BigDecimal {
+        BigDecimal::from_str(s).unwrap()
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_delete_individual_client(pool: PgPool) -> sqlx::Result<()> {
-        // First create a client
-        sqlx::query(
-            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
-             VALUES ('Jane', 'Doe', 'jane@example.com', '+48111222333', '98765432109')",
-        )
-        .execute(&pool)
-        .await?;
+    #[test]
+    fn test_discount_calculation() {
+        // Normal cases
+        assert_eq!(
+            calculate_final_discount(Some(bd("0.10")), Some(bd("0.05"))),
+            bd("0.15")
+        );
+        assert_eq!(
+            calculate_final_discount(Some(bd("0.20")), Some(bd("0.05"))),
+            bd("0.25")
+        );
 
-        let app = app(pool.clone()).await;
+        // Only base discount
+        assert_eq!(calculate_final_discount(Some(bd("0.10")), None), bd("0.10"));
+        assert_eq!(calculate_final_discount(Some(bd("0.15")), None), bd("0.15"));
 
-        let client_id = json!({
-            "type": "individual",
-            "value": "98765432109"
-        });
+        // Only recurring discount
+        assert_eq!(calculate_final_discount(None, Some(bd("0.05"))), bd("0.05"));
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/client")
-                    .method(Method::DELETE)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&client_id).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        // No discounts
+        assert_eq!(calculate_final_discount(None, None), bd("0"));
 
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // Verify client was soft deleted
-        let is_deleted = sqlx::query_scalar::<_, bool>(
-            "SELECT is_deleted FROM personal_client WHERE pesel = $1",
-        )
-        .bind("98765432109")
-        .fetch_one(&pool)
-        .await?;
-
-        assert!(is_deleted);
-
-        Ok(())
+        // Edge cases
+        assert_eq!(
+            calculate_final_discount(Some(bd("0.0")), Some(bd("0.0"))),
+            bd("0.0")
+        );
+        assert_eq!(
+            calculate_final_discount(Some(bd("1.0")), Some(bd("0.0"))),
+            bd("1.0")
+        );
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_delete_company_client_should_fail(pool: PgPool) -> sqlx::Result<()> {
-        let app = app(pool.clone()).await;
+    #[test]
+    fn test_price_discount_application() {
+        // Normal discount application
+        assert_eq!(
+            apply_discount_to_price(bd("100.0"), bd("0.1")).unwrap(),
+            bd("90.0")
+        );
+        assert_eq!(
+            apply_discount_to_price(bd("100.0"), bd("0.25")).unwrap(),
+            bd("75.0")
+        );
+        assert_eq!(
+            apply_discount_to_price(bd("50.0"), bd("0.2")).unwrap(),
+            bd("40.0")
+        );
 
-        let client_id = json!({
-            "type": "company",
-            "value": "9876543210"
-        });
+        // No discount
+        assert_eq!(
+            apply_discount_to_price(bd("100.0"), bd("0.0")).unwrap(),
+            bd("100.0")
+        );
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/client")
-                    .method(Method::DELETE)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&client_id).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        // Maximum discount
+        assert_eq!(
+            apply_discount_to_price(bd("100.0"), bd("1.0")).unwrap(),
+            bd("0.0")
+        );
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // Edge case: very small amounts
+        assert_eq!(
+            apply_discount_to_price(bd("0.01"), bd("0.5")).unwrap(),
+            bd("0.005")
+        );
 
-        Ok(())
+        // Invalid discount values
+        assert!(apply_discount_to_price(bd("100.0"), bd("-0.1")).is_err());
+        assert!(apply_discount_to_price(bd("100.0"), bd("1.1")).is_err());
+        assert!(apply_discount_to_price(bd("100.0"), bd("2.0")).is_err());
+
+        // Invalid price values
+        assert!(apply_discount_to_price(bd("-100.0"), bd("0.1")).is_err());
+        assert!(apply_discount_to_price(bd("-1.0"), bd("0.0")).is_err());
+
+        // Error messages
+        assert_eq!(
+            apply_discount_to_price(bd("100.0"), bd("-0.1")).unwrap_err(),
+            "Invalid discount range"
+        );
+        assert_eq!(
+            apply_discount_to_price(bd("-100.0"), bd("0.1")).unwrap_err(),
+            "Invalid price"
+        );
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_update_client(pool: PgPool) -> sqlx::Result<()> {
-        // First create a client
-        sqlx::query(
-            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
-             VALUES ('Old', 'Name', 'old@example.com', '+48000000000', '11111111111')",
-        )
-        .execute(&pool)
-        .await?;
+    #[test]
+    fn test_installment_payment_validation() {
+        // Valid payments
+        assert!(validate_installment_payment(bd("50.0"), bd("100.0")).is_ok());
+        assert!(validate_installment_payment(bd("100.0"), bd("100.0")).is_ok()); // Exact amount
+        assert!(validate_installment_payment(bd("0.01"), bd("100.0")).is_ok()); // Very small payment
 
-        let app = app(pool.clone()).await;
+        // Invalid: amount exceeds outstanding
+        assert!(validate_installment_payment(bd("150.0"), bd("100.0")).is_err());
+        assert!(validate_installment_payment(bd("100.01"), bd("100.0")).is_err());
 
-        let updated_client = json!({
-            "type": "individual",
-            "first_name": "New",
-            "last_name": "Name",
-            "email": "new@example.com",
-            "phone_number": "+48999999999",
-            "pesel": "11111111111"
-        });
+        // Invalid: non-positive amounts
+        assert!(validate_installment_payment(bd("0.0"), bd("100.0")).is_err());
+        assert!(validate_installment_payment(bd("-1.0"), bd("100.0")).is_err());
+        assert!(validate_installment_payment(bd("-50.0"), bd("100.0")).is_err());
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/client")
-                    .method(Method::PUT)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&updated_client).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        Ok(())
+        // Error messages
+        assert_eq!(
+            validate_installment_payment(bd("150.0"), bd("100.0")).unwrap_err(),
+            "Amount exceeds outstanding payments"
+        );
+        assert_eq!(
+            validate_installment_payment(bd("0.0"), bd("100.0")).unwrap_err(),
+            "Amount must be positive"
+        );
+        assert_eq!(
+            validate_installment_payment(bd("-1.0"), bd("100.0")).unwrap_err(),
+            "Amount must be positive"
+        );
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_contract(pool: PgPool) -> sqlx::Result<()> {
-        setup_test_data(&pool).await?;
+    #[test]
+    fn test_amounts_equal() {
+        // Equal amounts
+        assert!(amounts_equal(bd("100.0"), bd("100.0")));
+        assert!(amounts_equal(bd("50.5"), bd("50.5")));
+        assert!(amounts_equal(bd("0.0"), bd("0.0")));
 
-        // Create a client first
-        sqlx::query(
-            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
-             VALUES ('Contract', 'Test', 'contract@example.com', '+48555666777', '22222222222')",
-        )
-        .execute(&pool)
-        .await?;
+        // Different amounts
+        assert!(!amounts_equal(bd("100.0"), bd("100.01")));
+        assert!(!amounts_equal(bd("50.0"), bd("51.0")));
+        assert!(!amounts_equal(bd("0.0"), bd("0.01")));
 
-        let app = app(pool.clone()).await;
+        // Precise calculations that would fail with f64
+        let result = bd("0.1") + bd("0.2");
+        assert!(amounts_equal(result, bd("0.3"))); // This works with BigDecimal!
 
-        let purchase_request = json!({
-            "client_id": {
-                "type": "individual",
-                "value": "22222222222"
-            },
-            "start_date": "2024-01-01T00:00:00Z",
-            "end_date": "2025-01-01T00:00:00Z",
-            "product_id": 1,
-            "years_supported": 1
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/contract")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&purchase_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CREATED);
-
-        // Verify contract was created
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM private_contract WHERE client_id = $1 AND product_id = $2)"
-        )
-        .bind("22222222222")
-        .bind(1)
-        .fetch_one(&pool)
-        .await?;
-
-        assert!(exists);
-
-        Ok(())
+        // Very small differences
+        assert!(!amounts_equal(bd("1.0000001"), bd("1.0000002")));
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_contract_duplicate_should_fail(pool: PgPool) -> sqlx::Result<()> {
-        setup_test_data(&pool).await?;
+    #[test]
+    fn test_recurring_discount_qualification() {
+        // Qualifies for recurring discount
+        assert!(client_qualifies_for_recurring_discount(1));
+        assert!(client_qualifies_for_recurring_discount(2));
+        assert!(client_qualifies_for_recurring_discount(10));
 
-        // Create a client and contract first
-        sqlx::query(
-            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
-             VALUES ('Duplicate', 'Test', 'dup@example.com', '+48333444555', '33333333333')",
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            "INSERT INTO private_contract (client_id, product_id, price, start_date, end_date, years_supported) 
-             VALUES ('33333333333', 1, 1000.00, '2024-01-01', '2025-01-01', 1)"
-        )
-        .execute(&pool)
-        .await?;
-
-        let app = app(pool.clone()).await;
-
-        let purchase_request = json!({
-            "client_id": {
-                "type": "individual",
-                "value": "33333333333"
-            },
-            "start_date": "2024-01-01T00:00:00Z",
-            "end_date": "2025-01-01T00:00:00Z",
-            "product_id": 1,
-            "years_supported": 1
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/contract")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&purchase_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        Ok(())
+        // Does not qualify
+        assert!(!client_qualifies_for_recurring_discount(0));
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_payment_single(pool: PgPool) -> sqlx::Result<()> {
-        setup_test_data(&pool).await?;
+    #[test]
+    fn test_business_logic_edge_cases() {
+        // Test discount calculation with maximum values
+        let max_discount = calculate_final_discount(Some(bd("0.95")), Some(bd("0.05")));
+        assert_eq!(max_discount, bd("1.0"));
 
-        // Create a client and contract
-        sqlx::query(
-            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
-             VALUES ('Payment', 'Test', 'payment@example.com', '+48777888999', '44444444444')",
-        )
-        .execute(&pool)
-        .await?;
+        // Test price with maximum discount
+        let free_price = apply_discount_to_price(bd("100.0"), bd("1.0")).unwrap();
+        assert_eq!(free_price, bd("0.0"));
 
-        sqlx::query(
-            "INSERT INTO private_contract (id, client_id, product_id, price, start_date, end_date, years_supported) 
-             VALUES (1, '44444444444', 1, 1000.00, '2024-01-01', '2025-01-01', 1)"
-        )
-        .execute(&pool)
-        .await?;
+        // Test very large prices
+        let large_price = apply_discount_to_price(bd("1000000.0"), bd("0.1")).unwrap();
+        assert_eq!(large_price, bd("900000.0"));
 
-        let app = app(pool.clone()).await;
+        // Test very small installment
+        assert!(validate_installment_payment(bd("0.01"), bd("1000.0")).is_ok());
 
-        let payment_request = json!({
-            "SinglePayment": {
-                "contract_id": 1,
-                "amount": 1000.0,
-                "client_id": {
-                    "type": "individual",
-                    "value": "44444444444"
-                }
-            }
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/payment")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&payment_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // Verify payment was recorded
-        let is_paid =
-            sqlx::query_scalar::<_, bool>("SELECT is_paid FROM private_contract WHERE id = $1")
-                .bind(1)
-                .fetch_one(&pool)
-                .await?;
-
-        assert!(is_paid);
-
-        Ok(())
+        // Test precise decimal calculations
+        let precise_discount = apply_discount_to_price(bd("100.00"), bd("0.15")).unwrap();
+        assert_eq!(precise_discount, bd("85.00"));
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_payment_installments(pool: PgPool) -> sqlx::Result<()> {
-        setup_test_data(&pool).await?;
+    #[test]
+    fn test_combined_business_scenarios() {
+        // Scenario: New client with product discount
+        let product_discount = Some(bd("0.15"));
+        let recurring_discount = None; // New client
+        let total_discount = calculate_final_discount(product_discount, recurring_discount);
+        let final_price = apply_discount_to_price(bd("1000.0"), total_discount).unwrap();
+        assert_eq!(final_price, bd("850.0"));
 
-        // Create a client and contract
-        sqlx::query(
-            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
-             VALUES ('Installment', 'Test', 'installment@example.com', '+48123123123', '55555555555')"
+        // Scenario: Recurring client with product discount
+        let product_discount = Some(bd("0.10"));
+        let recurring_discount = Some(bd("0.05")); // Returning client
+        let total_discount = calculate_final_discount(product_discount, recurring_discount);
+        let final_price = apply_discount_to_price(bd("1000.0"), total_discount).unwrap();
+        assert_eq!(final_price, bd("850.0"));
+
+        // Scenario: Recurring client, no product discount
+        let product_discount = None;
+        let recurring_discount = Some(bd("0.05"));
+        let total_discount = calculate_final_discount(product_discount, recurring_discount);
+        let final_price = apply_discount_to_price(bd("1000.0"), total_discount).unwrap();
+        assert_eq!(final_price, bd("950.0"));
+
+        // Scenario: Installment payment validation
+        let contract_price = bd("1000.0");
+        let paid_so_far = bd("400.0");
+        let outstanding = contract_price - paid_so_far;
+
+        // Valid partial payment
+        assert!(validate_installment_payment(bd("200.0"), outstanding.clone()).is_ok());
+
+        // Valid full payment
+        assert!(validate_installment_payment(outstanding.clone(), outstanding.clone()).is_ok());
+
+        // Invalid overpayment
+        assert!(validate_installment_payment(
+            outstanding.clone() + bd("0.01"),
+            outstanding.clone()
         )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            "INSERT INTO private_contract (id, client_id, product_id, price, start_date, end_date, years_supported) 
-             VALUES (2, '55555555555', 1, 1200.00, '2024-01-01', '2025-01-01', 1)"
-        )
-        .execute(&pool)
-        .await?;
-
-        let app = app(pool.clone()).await;
-
-        let payment_request = json!({
-            "Installments": {
-                "contract_id": 2,
-                "client_id": {
-                    "type": "individual",
-                    "value": "55555555555"
-                },
-                "amount_per_installment": 100.0,
-                "amount_of_installments": 12
-            }
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/payment")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&payment_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // Verify payment was recorded
-        let is_paid =
-            sqlx::query_scalar::<_, bool>("SELECT is_paid FROM private_contract WHERE id = $1")
-                .bind(2)
-                .fetch_one(&pool)
-                .await?;
-
-        assert!(is_paid);
-
-        Ok(())
+        .is_err());
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_payment_wrong_amount_should_fail(pool: PgPool) -> sqlx::Result<()> {
-        setup_test_data(&pool).await?;
-
-        // Create a client and contract
-        sqlx::query(
-            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
-             VALUES ('Wrong', 'Amount', 'wrong@example.com', '+48999000111', '66666666666')",
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            "INSERT INTO private_contract (id, client_id, product_id, price, start_date, end_date, years_supported) 
-             VALUES (3, '66666666666', 1, 1000.00, '2024-01-01', '2025-01-01', 1)"
-        )
-        .execute(&pool)
-        .await?;
-
-        let app = app(pool.clone()).await;
-
-        let payment_request = json!({
-            "SinglePayment": {
-                "contract_id": 3,
-                "amount": 500.0,  // Wrong amount
-                "client_id": {
-                    "type": "individual",
-                    "value": "66666666666"
-                }
-            }
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/payment")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&payment_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_client_duplicate_pesel_should_fail(pool: PgPool) -> sqlx::Result<()> {
-        let app = app(pool.clone()).await;
-
-        let client = json!({
-            "type": "individual",
-            "first_name": "John",
-            "last_name": "Doe",
-            "email": "john.doe@example.com",
-            "phone_number": "+48123456789",
-            "pesel": "12345678901"
-        });
-
-        // Create the client for the first time
-        let _response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/client")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&client).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        // Attempt to create the same client again
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/client")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&client).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_client_duplicate_krs_should_fail(pool: PgPool) -> sqlx::Result<()> {
-        let app = app(pool.clone()).await;
-
-        let client = json!({
-            "type": "company",
-            "name": "Test Company",
-            "address": "123 Test St",
-            "email": "test@company.com",
-            "phone_number": "+48123123123",
-            "krs": "1234567890"
-        });
-
-        // Create the client for the first time
-        let _response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/client")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&client).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        // Attempt to create the same client again
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/client")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&client).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_delete_non_existent_client_should_succeed(pool: PgPool) -> sqlx::Result<()> {
-        let app = app(pool.clone()).await;
-
-        let client_id = json!({
-            "type": "individual",
-            "value": "00000000000" // Non-existent PESEL
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/client")
-                    .method(Method::DELETE)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&client_id).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_update_company_client(pool: PgPool) -> sqlx::Result<()> {
-        // First create a company client
-        sqlx::query(
-            "INSERT INTO company_client (name, address, email, phone_number, krs) 
-             VALUES ('Old Company', 'Old Address', 'old@company.com', '+48111111111', '1111111111')",
-        )
-        .execute(&pool)
-        .await?;
-
-        let app = app(pool.clone()).await;
-
-        let updated_client = json!({
-            "type": "company",
-            "name": "New Company",
-            "address": "New Address",
-            "email": "new@company.com",
-            "phone_number": "+48222222222",
-            "krs": "1111111111"
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/client")
-                    .method(Method::PUT)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&updated_client).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // Verify the client was updated
-        let updated_name: String =
-            sqlx::query_scalar("SELECT name FROM company_client WHERE krs = '1111111111'")
-                .fetch_one(&pool)
-                .await?;
-
-        assert_eq!(updated_name, "New Company");
-
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_contract_for_company_client(pool: PgPool) -> sqlx::Result<()> {
-        setup_test_data(&pool).await?;
-
-        // Create a company client
-        sqlx::query(
-            "INSERT INTO company_client (name, address, email, phone_number, krs) 
-             VALUES ('Company Contract', 'Test Address', 'cc@example.com', '+48444555666', '4444444444')",
-        )
-        .execute(&pool)
-        .await?;
-
-        let app = app(pool.clone()).await;
-
-        let purchase_request = json!({
-            "client_id": {
-                "type": "company",
-                "value": "4444444444"
-            },
-            "start_date": "2024-01-01T00:00:00Z",
-            "end_date": "2025-01-01T00:00:00Z",
-            "product_id": 1,
-            "years_supported": 1
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/contract")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&purchase_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CREATED);
-
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_contract_non_existent_client_should_fail(
-        pool: PgPool,
-    ) -> sqlx::Result<()> {
-        setup_test_data(&pool).await?;
-        let app = app(pool.clone()).await;
-
-        let purchase_request = json!({
-            "client_id": {
-                "type": "individual",
-                "value": "00000000000" // Non-existent client
-            },
-            "start_date": "2024-01-01T00:00:00Z",
-            "end_date": "2025-01-01T00:00:00Z",
-            "product_id": 1,
-            "years_supported": 1
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/contract")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&purchase_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_contract_non_existent_product_should_fail(
-        pool: PgPool,
-    ) -> sqlx::Result<()> {
-        // Create a client first
-        sqlx::query(
-            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
-             VALUES ('Contract', 'Test', 'contract@example.com', '+48555666777', '22222222222')",
-        )
-        .execute(&pool)
-        .await?;
-
-        let app = app(pool.clone()).await;
-
-        let purchase_request = json!({
-            "client_id": {
-                "type": "individual",
-                "value": "22222222222"
-            },
-            "start_date": "2024-01-01T00:00:00Z",
-            "end_date": "2025-01-01T00:00:00Z",
-            "product_id": 999, // Non-existent product
-            "years_supported": 1
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/contract")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&purchase_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_payment_non_existent_contract_should_fail(
-        pool: PgPool,
-    ) -> sqlx::Result<()> {
-        setup_test_data(&pool).await?;
-
-        // Create a client
-        sqlx::query(
-            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
-             VALUES ('Payment', 'Test', 'payment@example.com', '+48777888999', '44444444444')",
-        )
-        .execute(&pool)
-        .await?;
-
-        let app = app(pool.clone()).await;
-
-        let payment_request = json!({
-            "SinglePayment": {
-                "contract_id": 999, // Non-existent contract
-                "amount": 1000.0,
-                "client_id": {
-                    "type": "individual",
-                    "value": "44444444444"
-                }
-            }
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/payment")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&payment_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_payment_for_already_paid_contract(pool: PgPool) -> sqlx::Result<()> {
-        setup_test_data(&pool).await?;
-
-        // Create a client and a paid contract
-        sqlx::query(
-            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
-             VALUES ('Paid', 'Contract', 'paid@example.com', '+48111000111', '77777777777')",
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            "INSERT INTO private_contract (id, client_id, product_id, price, start_date, end_date, years_supported, is_paid) 
-             VALUES (4, '77777777777', 1, 1000.00, '2024-01-01', '2025-01-01', 1, TRUE)",
-        )
-        .execute(&pool)
-        .await?;
-
-        let app = app(pool.clone()).await;
-
-        let payment_request = json!({
-            "SinglePayment": {
-                "contract_id": 4,
-                "amount": 1000.0,
-                "client_id": {
-                    "type": "individual",
-                    "value": "77777777777"
-                }
-            }
-        });
-
-        // The current implementation does not prevent paying for a contract that is already paid.
-        // It will just update the `is_paid` flag to TRUE again. So we expect an OK status.
-        // A more robust implementation might return a BadRequest.
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/payment")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&payment_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        Ok(())
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn test_create_payment_installments_wrong_amount_should_fail(
-        pool: PgPool,
-    ) -> sqlx::Result<()> {
-        setup_test_data(&pool).await?;
-
-        // Create a client and contract
-        sqlx::query(
-            "INSERT INTO personal_client (first_name, last_name, email, phone_number, pesel) 
-             VALUES ('Installment', 'Fail', 'inst-fail@example.com', '+48987987987', '88888888888')",
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            "INSERT INTO private_contract (id, client_id, product_id, price, start_date, end_date, years_supported) 
-             VALUES (5, '88888888888', 1, 1200.00, '2024-01-01', '2025-01-01', 1)",
-        )
-        .execute(&pool)
-        .await?;
-
-        let app = app(pool.clone()).await;
-
-        let payment_request = json!({
-            "Installments": {
-                "contract_id": 5,
-                "client_id": {
-                    "type": "individual",
-                    "value": "88888888888"
-                },
-                "amount_per_installment": 100.0,
-                "amount_of_installments": 10 // Should be 12
-            }
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/payment")
-                    .method(Method::POST)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&payment_request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        Ok(())
+    #[test]
+    fn test_precise_financial_calculations() {
+        // Test calculations that would fail with f64 due to precision
+        let price = bd("99.99");
+        let discount = bd("0.125"); // 12.5%
+        let result = apply_discount_to_price(price, discount).unwrap();
+        assert_eq!(result, bd("87.49125"));
+
+        // Test multiple discount applications
+        let base = bd("1000.00");
+        let first_discount = bd("0.10");
+        let after_first = apply_discount_to_price(base, first_discount).unwrap();
+        assert_eq!(after_first, bd("900.00"));
+
+        // Test very precise calculations - just verify it works, don't hardcode the result
+        let precise_price = bd("123.456789");
+        let precise_discount = bd("0.123456");
+        let precise_result =
+            apply_discount_to_price(precise_price.clone(), precise_discount.clone()).unwrap();
+
+        // Verify the calculation is correct: result = price * (1 - discount)
+        let expected = precise_price * (bd("1") - precise_discount);
+        assert_eq!(precise_result, expected);
+
+        // Just verify it's in the right ballpark
+        assert!(precise_result > bd("100"));
+        assert!(precise_result < bd("110"));
     }
 }

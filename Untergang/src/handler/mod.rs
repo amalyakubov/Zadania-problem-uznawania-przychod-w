@@ -207,13 +207,14 @@ pub async fn create_contract(
     )
     .await
     .map_err(|e| AppError::InternalServerError(format!("Failed to get discount: {}", e)))?
-    .unwrap_or(0.0);
+    .unwrap_or(BigDecimal::from_f64(0.0).expect("Failed to convert 0.0 to BigDecimal"));
 
     let price = get_price_for_product(&pool, purchase_request.product_id)
         .await
         .map_err(|e| AppError::InternalServerError(format!("Failed to get price: {:?}", e)))?;
 
-    let final_price = price * (1.0 - discount);
+    let final_price = price
+        * (BigDecimal::from_f64(1.0).expect("Failed to convert 1.0 to BigDecimal") - discount);
 
     create_contract_in_db(
         &pool,
@@ -234,13 +235,13 @@ pub async fn create_contract(
 pub struct InstallmentsPayment {
     contract_id: i32,
     client_id: ClientId,
-    amount: f64,
+    amount: BigDecimal,
 }
 
 #[derive(Clone, serde::Deserialize)]
 pub struct SinglePayment {
     contract_id: i32,
-    amount: f64,
+    amount: BigDecimal,
     client_id: ClientId,
 }
 
@@ -300,18 +301,18 @@ pub async fn create_payment(
                 ))
             })?;
 
-        payments::create_payment_record_in_db(&pool, contract_id, outstanding_payments * -1.0)
-            .await
-            .map_err(|e| {
-                AppError::InternalServerError(format!("Failed to create payment: {:?}", e))
-            })?;
+        payments::create_payment_record_in_db(
+            &pool,
+            contract_id,
+            outstanding_payments
+                * BigDecimal::from_f64(-1.0).expect("Failed to convert -1.0 to BigDecimal"),
+        )
+        .await
+        .map_err(|e| AppError::InternalServerError(format!("Failed to create payment: {:?}", e)))?;
 
         let new_contract = create_contract_in_db(
             &pool,
-            contract
-                .price
-                .to_f64()
-                .expect("Failed to convert price to f64"),
+            contract.price.clone(),
             contract.product_id,
             client_id.clone(),
             contract.start_date,
@@ -338,21 +339,26 @@ pub async fn create_payment(
                     ))
                 })?;
 
-            if installments_payment.amount > outstanding_payments {
+            if installments_payment.amount.clone() > outstanding_payments {
                 return Err(AppError::BadRequest(
                     "Amount is greater than outstanding payments".to_string(),
                 ));
             }
 
             // Create a payment entry in the database
-            pay_for_contract(&pool, contract_id, &client_id, installments_payment.amount)
-                .await
-                .map_err(|e| {
-                    AppError::InternalServerError(format!("Failed to pay for contract: {:?}", e))
-                })?;
+            pay_for_contract(
+                &pool,
+                contract_id,
+                &client_id,
+                installments_payment.amount.clone(),
+            )
+            .await
+            .map_err(|e| {
+                AppError::InternalServerError(format!("Failed to pay for contract: {:?}", e))
+            })?;
 
             // If the payment is the full amount, handle the full payment and set the contract to paid =>'signed'
-            if installments_payment.amount == outstanding_payments {
+            if installments_payment.amount.clone() == outstanding_payments {
                 payments::handle_full_payment(&pool, contract_id, client_id)
                     .await
                     .map_err(|e| {
@@ -367,10 +373,7 @@ pub async fn create_payment(
             Ok((StatusCode::OK, "Payment successful".to_string()))
         }
         PaymentRequest::SinglePayment(single_payment) => {
-            if BigDecimal::from_f64(single_payment.amount)
-                .expect("Failed to convert the payment amount into bigdecimal")
-                != contract.price
-            {
+            if single_payment.amount != contract.price {
                 return Err(AppError::BadRequest(
                     "Amount does not match contract price".to_string(),
                 ));

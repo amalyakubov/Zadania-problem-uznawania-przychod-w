@@ -71,8 +71,8 @@ pub async fn find_discounts_for_client(
     pool: &Pool<Postgres>,
     product_id: i32,
     client_id: ClientId,
-) -> Result<Option<f64>, sqlx::Error> {
-    let highest_discount = sqlx::query_scalar::<_, f64>(
+) -> Result<Option<BigDecimal>, sqlx::Error> {
+    let highest_discount = sqlx::query_scalar::<_, BigDecimal>(
         "SELECT percentage FROM discount WHERE discounted_products = $1 AND is_deleted = FALSE AND start_date <= CURRENT_DATE AND end_date > CURRENT_DATE ORDER BY percentage DESC LIMIT 1",
     )
     .bind(product_id)
@@ -92,7 +92,10 @@ pub async fn find_discounts_for_client(
             match result {
                 Some(count) => {
                     if count >= 1 {
-                        additional_discount = Some(0.05);
+                        additional_discount = Some(
+                            BigDecimal::from_f64(0.05)
+                                .expect("Failed to convert 0.05 to BigDecimal"),
+                        );
                     }
                 }
                 None => {
@@ -110,7 +113,10 @@ pub async fn find_discounts_for_client(
             match result {
                 Some(count) => {
                     if count >= 1 {
-                        additional_discount = Some(0.05);
+                        additional_discount = Some(
+                            BigDecimal::from_f64(0.05)
+                                .expect("Failed to convert 0.05 to BigDecimal"),
+                        );
                     }
                 }
                 None => {
@@ -127,7 +133,7 @@ pub async fn find_discounts_for_client(
         },
         None => match additional_discount {
             Some(additional) => additional,
-            None => 0.0,
+            None => BigDecimal::from_f64(0.0).expect("Failed to convert 0.0 to BigDecimal"),
         },
     };
     Ok(Some(final_discount))
@@ -136,7 +142,7 @@ pub async fn find_discounts_for_client(
 pub async fn get_price_for_product(
     pool: &Pool<Postgres>,
     product_id: i32,
-) -> Result<f64, (sqlx::Error, String)> {
+) -> Result<BigDecimal, (sqlx::Error, String)> {
     let result = sqlx::query_scalar::<_, BigDecimal>("SELECT price FROM software WHERE id = $1")
         .bind(product_id)
         .fetch_optional(pool)
@@ -148,13 +154,7 @@ pub async fn get_price_for_product(
             )
         })?;
     match result {
-        Some(price) => {
-            // Convert BigDecimal to f64
-            price.to_f64().ok_or((
-                sqlx::Error::Decode("Failed to convert price to f64".into()),
-                "Failed to convert price to f64".to_string(),
-            ))
-        }
+        Some(price) => Ok(price),
         None => Err((
             sqlx::Error::RowNotFound,
             "Failed to determine the price of the product".to_string(),
@@ -164,16 +164,13 @@ pub async fn get_price_for_product(
 
 pub async fn create_contract_in_db(
     pool: &Pool<Postgres>,
-    price: f64,
+    price: BigDecimal,
     product_id: i32,
     client_id: ClientId,
     start_date: DateTime<Utc>,
     end_date: DateTime<Utc>,
     years_supported: i32,
 ) -> Result<(), sqlx::Error> {
-    let price_decimal = BigDecimal::from_f64(price)
-        .ok_or(sqlx::Error::Configuration("Invalid price format".into()))?;
-
     let (contract_type, personal_client_pesel, company_client_krs) = match client_id {
         ClientId::Individual(pesel) => ("private", Some(pesel), None),
         ClientId::Company(krs) => ("corporate", None, Some(krs)),
@@ -182,7 +179,7 @@ pub async fn create_contract_in_db(
     sqlx::query!(
         "INSERT INTO contract (contract_type, personal_client_pesel, company_client_krs, product_id, price, start_date, end_date, years_supported, is_signed, is_deleted) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", 
-        contract_type, personal_client_pesel, company_client_krs, product_id, price_decimal, start_date.naive_utc(), end_date.naive_utc(), years_supported, false, false
+        contract_type, personal_client_pesel, company_client_krs, product_id, price, start_date.naive_utc(), end_date.naive_utc(), years_supported, false, false
     )
     .execute(pool)
     .await?;
@@ -289,7 +286,7 @@ pub async fn pay_for_contract(
     pool: &Pool<Postgres>,
     contract_id: i32,
     _client_id: &ClientId,
-    amount: f64,
+    amount: BigDecimal,
 ) -> Result<(), AppError> {
     match payments::create_payment_record_in_db(pool, contract_id, amount)
         .await
@@ -334,17 +331,14 @@ pub mod payments {
     pub async fn check_outstanding_payments(
         pool: &Pool<Postgres>,
         contract_id: i32,
-    ) -> Result<f64, AppError> {
+    ) -> Result<BigDecimal, AppError> {
         let payments = get_payments_for_contract(pool, contract_id)
             .await
             .map_err(|e| {
                 AppError::InternalServerError(format!("Failed to get payments: {:?}", e))
             })?;
 
-        let outstanding_payments = payments
-            .iter()
-            .map(|p| p.amount.to_f64().expect("Failed to convert amount to f64"))
-            .sum();
+        let outstanding_payments = payments.iter().map(|p| p.amount.clone()).sum();
 
         Ok(outstanding_payments)
     }
@@ -352,16 +346,12 @@ pub mod payments {
     pub async fn create_payment_record_in_db(
         pool: &Pool<Postgres>,
         contract_id: i32,
-        amount: f64,
+        amount: BigDecimal,
     ) -> Result<(), AppError> {
-        let amount_decimal = BigDecimal::from_f64(amount).ok_or(AppError::InternalServerError(
-            "Invalid amount format".to_string(),
-        ))?;
-
         match sqlx::query!(
             "INSERT INTO payment (contract_id, amount) VALUES ($1, $2)",
             contract_id,
-            amount_decimal
+            amount
         )
         .execute(pool)
         .await
