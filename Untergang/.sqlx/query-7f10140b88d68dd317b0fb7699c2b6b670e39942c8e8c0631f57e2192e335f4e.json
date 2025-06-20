@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, price, product_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted \n                 FROM contract \n                 WHERE id = $1 AND personal_client_pesel = $2 AND is_deleted = FALSE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "price",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 2,
+        "name": "product_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "start_date",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 4,
+        "name": "end_date",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 5,
+        "name": "years_supported",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_signed",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_paid",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7f10140b88d68dd317b0fb7699c2b6b670e39942c8e8c0631f57e2192e335f4e"
+}

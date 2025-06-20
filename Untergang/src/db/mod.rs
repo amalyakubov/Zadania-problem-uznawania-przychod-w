@@ -1,5 +1,5 @@
 use crate::client::{ClientId, Contract, Payment};
-use crate::handler::{AppError, AppError::InternalServerError};
+use crate::handler::AppError;
 use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
@@ -84,7 +84,7 @@ pub async fn find_discounts_for_client(
         // handle recurring clients
         ClientId::Individual(pesel) => {
             let result = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM private_contract WHERE client_id = $1 AND is_deleted = FALSE AND start_date <= CURRENT_DATE AND end_date > CURRENT_DATE",
+                "SELECT COUNT(*) FROM contract WHERE client_id = $1 AND is_deleted = FALSE AND start_date <= CURRENT_DATE AND end_date > CURRENT_DATE",
             )
             .bind(pesel)
             .fetch_optional(pool)
@@ -102,7 +102,7 @@ pub async fn find_discounts_for_client(
         }
         ClientId::Company(krs) => {
             let result = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM corporate_contract WHERE client_id = $1 AND is_deleted = FALSE AND start_date <= CURRENT_DATE AND end_date > CURRENT_DATE",
+                "SELECT COUNT(*) FROM contract WHERE client_id = $1 AND is_deleted = FALSE AND start_date <= CURRENT_DATE AND end_date > CURRENT_DATE",
             )
             .bind(krs)
             .fetch_optional(pool)
@@ -174,26 +174,19 @@ pub async fn create_contract_in_db(
     let price_decimal = BigDecimal::from_f64(price)
         .ok_or(sqlx::Error::Configuration("Invalid price format".into()))?;
 
-    match client_id {
-        ClientId::Individual(pesel) => {
-            sqlx::query!(
-                "INSERT INTO private_contract (client_id, product_id, price, start_date, end_date, years_supported, is_signed, is_deleted) 
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", 
-                pesel, product_id, price_decimal, start_date.naive_utc(), end_date.naive_utc(), years_supported, false, false
-            )
-            .execute(pool)
-            .await?;
-        }
-        ClientId::Company(krs) => {
-            sqlx::query!(
-                "INSERT INTO corporate_contract (client_id, product_id, price, start_date, end_date, years_supported, is_signed, is_deleted) 
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", 
-                krs, product_id, price_decimal, start_date.naive_utc(), end_date.naive_utc(), years_supported, false, false
-            )
-            .execute(pool)
-            .await?;
-        }
-    }
+    let (contract_type, personal_client_pesel, company_client_krs) = match client_id {
+        ClientId::Individual(pesel) => ("private", Some(pesel), None),
+        ClientId::Company(krs) => ("corporate", None, Some(krs)),
+    };
+
+    sqlx::query!(
+        "INSERT INTO contract (contract_type, personal_client_pesel, company_client_krs, product_id, price, start_date, end_date, years_supported, is_signed, is_deleted) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", 
+        contract_type, personal_client_pesel, company_client_krs, product_id, price_decimal, start_date.naive_utc(), end_date.naive_utc(), years_supported, false, false
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 
@@ -202,28 +195,27 @@ pub async fn check_if_client_has_contract_for_product(
     client_id: ClientId,
     product_id: i32,
 ) -> Result<bool, sqlx::Error> {
-    match client_id {
+    let result = match client_id {
         ClientId::Individual(pesel) => {
-            let result = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM private_contract WHERE client_id = $1 AND product_id = $2 AND is_deleted = FALSE)",
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM contract WHERE personal_client_pesel = $1 AND product_id = $2 AND is_deleted = FALSE)",
             )
             .bind(pesel)
             .bind(product_id)
             .fetch_one(pool)
-            .await?;
-            Ok(result)
+            .await?
         }
         ClientId::Company(krs) => {
-            let result = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM corporate_contract WHERE client_id = $1 AND product_id = $2 AND is_deleted = FALSE)",
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM contract WHERE company_client_krs = $1 AND product_id = $2 AND is_deleted = FALSE)",
             )
             .bind(krs)
             .bind(product_id)
             .fetch_one(pool)
-            .await?;
-            Ok(result)
+            .await?
         }
-    }
+    };
+    Ok(result)
 }
 
 pub async fn get_contract_by_id(
@@ -234,7 +226,9 @@ pub async fn get_contract_by_id(
     match client_id {
         ClientId::Individual(pesel) => {
             let result = sqlx::query!(
-                "SELECT id, price, product_id, client_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted FROM private_contract WHERE id = $1 AND client_id = $2 AND is_deleted = FALSE",
+                "SELECT id, price, product_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted 
+                 FROM contract 
+                 WHERE id = $1 AND personal_client_pesel = $2 AND is_deleted = FALSE",
                 contract_id,
                 pesel,
             )
@@ -261,7 +255,9 @@ pub async fn get_contract_by_id(
         }
         ClientId::Company(krs) => {
             let result = sqlx::query!(
-                "SELECT id, price, product_id, client_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted FROM corporate_contract WHERE id = $1 AND client_id = $2 AND is_deleted = FALSE",
+                "SELECT id, price, product_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted 
+                 FROM contract 
+                 WHERE id = $1 AND company_client_krs = $2 AND is_deleted = FALSE",
                 contract_id,
                 krs,
             )
@@ -292,30 +288,15 @@ pub async fn get_contract_by_id(
 pub async fn pay_for_contract(
     pool: &Pool<Postgres>,
     contract_id: i32,
-    client_id: &ClientId,
+    _client_id: &ClientId,
     amount: f64,
 ) -> Result<(), AppError> {
-    match client_id {
-        ClientId::Individual(_pesel) => {
-            match payments::create_payment_record_in_db(pool, contract_id, amount)
-                .await
-                .map_err(|e| {
-                    AppError::InternalServerError(format!("Failed to create payment: {:?}", e))
-                }) {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e),
-            }
-        }
-        ClientId::Company(_krs) => {
-            match payments::create_payment_record_in_db(pool, contract_id, amount)
-                .await
-                .map_err(|e| {
-                    AppError::InternalServerError(format!("Failed to create payment: {:?}", e))
-                }) {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e),
-            }
-        }
+    match payments::create_payment_record_in_db(pool, contract_id, amount)
+        .await
+        .map_err(|e| AppError::InternalServerError(format!("Failed to create payment: {:?}", e)))
+    {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -401,7 +382,7 @@ pub mod payments {
         match client_id {
             ClientId::Individual(pesel) => {
                 match sqlx::query!(
-                    "UPDATE private_contract SET is_paid = TRUE WHERE id = $1 AND client_id = $2",
+                    "UPDATE contract SET is_paid = TRUE WHERE id = $1 AND personal_client_pesel = $2",
                     contract_id,
                     pesel
                 )
@@ -416,7 +397,7 @@ pub mod payments {
             }
             ClientId::Company(krs) => {
                 match sqlx::query!(
-                    "UPDATE corporate_contract SET is_paid = TRUE WHERE id = $1 AND client_id = $2",
+                    "UPDATE contract SET is_paid = TRUE WHERE id = $1 AND company_client_krs = $2",
                     contract_id,
                     krs
                 )

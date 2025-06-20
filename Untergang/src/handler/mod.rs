@@ -1,4 +1,4 @@
-use crate::db::{payments, payments::handle_full_payment};
+use crate::db::payments;
 use axum::{
     extract::{Json, State},
     http::StatusCode,
