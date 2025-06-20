@@ -1,9 +1,10 @@
+use crate::db::{payments, payments::handle_full_payment};
 use axum::{
     extract::{Json, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use bigdecimal::{BigDecimal, FromPrimitive};
+use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
 
@@ -16,6 +17,7 @@ use crate::{
     },
 };
 
+#[derive(Debug)]
 pub enum AppError {
     BadRequest(String),
     InternalServerError(String),
@@ -232,8 +234,7 @@ pub async fn create_contract(
 pub struct InstallmentsPayment {
     contract_id: i32,
     client_id: ClientId,
-    amount_per_installment: f64,
-    amount_of_installments: i32,
+    amount: f64,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -282,25 +283,86 @@ pub async fn create_payment(
             _ => AppError::InternalServerError(format!("Failed to get contract: {}", e)),
         })?;
 
+    if contract.is_paid {
+        return Err(AppError::BadRequest("Contract is already paid".to_string()));
+    }
+
+    let current_date = Utc::now();
+    // if the contract is expired, create a new contract
+    if contract.end_date <= current_date {
+        // get the outstanding payments
+        let outstanding_payments = payments::check_outstanding_payments(&pool, contract_id)
+            .await
+            .map_err(|e| {
+                AppError::InternalServerError(format!(
+                    "Failed to check outstanding payments: {:?}",
+                    e
+                ))
+            })?;
+
+        payments::create_payment_record_in_db(&pool, contract_id, outstanding_payments * -1.0)
+            .await
+            .map_err(|e| {
+                AppError::InternalServerError(format!("Failed to create payment: {:?}", e))
+            })?;
+
+        let new_contract = create_contract_in_db(
+            &pool,
+            contract
+                .price
+                .to_f64()
+                .expect("Failed to convert price to f64"),
+            contract.product_id,
+            client_id.clone(),
+            contract.start_date,
+            contract.end_date,
+            contract.years_supported,
+        )
+        .await
+        .map_err(|e| AppError::InternalServerError(format!("Failed to create contract: {}", e)))?;
+
+        return Ok((
+            StatusCode::CREATED,
+            "Missed payment, a new contract has been created. Any outstanding payments have been returned to you.".to_string(),
+        ));
+    }
+
     match payment_request {
         PaymentRequest::Installments(installments_payment) => {
-            // check if the total amount to be paid is equal to the contract price
-            if BigDecimal::from_f64(installments_payment.amount_per_installment)
-                .expect("Failed to convert amount per installment to BigDecimal")
-                * BigDecimal::from_i32(installments_payment.amount_of_installments)
-                    .expect("Failed to convert amount of installments to BigDecimal")
-                != contract.price
-            {
+            let outstanding_payments = payments::check_outstanding_payments(&pool, contract_id)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!(
+                        "Failed to check outstanding payments: {:?}",
+                        e
+                    ))
+                })?;
+
+            if installments_payment.amount > outstanding_payments {
                 return Err(AppError::BadRequest(
-                    "Amount does not match contract price".to_string(),
+                    "Amount is greater than outstanding payments".to_string(),
                 ));
             }
 
-            pay_for_contract(pool, contract_id, client_id)
+            // Create a payment entry in the database
+            pay_for_contract(&pool, contract_id, &client_id, installments_payment.amount)
                 .await
                 .map_err(|e| {
-                    AppError::InternalServerError(format!("Failed to pay for contract: {}", e))
+                    AppError::InternalServerError(format!("Failed to pay for contract: {:?}", e))
                 })?;
+
+            // If the payment is the full amount, handle the full payment and set the contract to paid =>'signed'
+            if installments_payment.amount == outstanding_payments {
+                payments::handle_full_payment(&pool, contract_id, client_id)
+                    .await
+                    .map_err(|e| {
+                        AppError::InternalServerError(format!(
+                            "Failed to handle full payment: {:?}",
+                            e
+                        ))
+                    })?;
+                return Ok((StatusCode::OK, "Payment successful".to_string()));
+            }
 
             Ok((StatusCode::OK, "Payment successful".to_string()))
         }
@@ -314,10 +376,16 @@ pub async fn create_payment(
                 ));
             }
 
-            pay_for_contract(pool, contract_id, client_id)
+            pay_for_contract(&pool, contract_id, &client_id, single_payment.amount)
                 .await
                 .map_err(|e| {
-                    AppError::InternalServerError(format!("Failed to pay for contract: {}", e))
+                    AppError::InternalServerError(format!("Failed to pay for contract: {:?}", e))
+                })?;
+
+            payments::handle_full_payment(&pool, contract_id, client_id)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!("Failed to handle full payment: {:?}", e))
                 })?;
 
             Ok((StatusCode::OK, "Payment successful".to_string()))

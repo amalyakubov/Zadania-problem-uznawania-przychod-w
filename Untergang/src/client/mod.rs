@@ -47,4 +47,16 @@ pub struct Contract {
     pub start_date: DateTime<Utc>,
     pub end_date: DateTime<Utc>,
     pub years_supported: i32,
+    pub is_signed: bool,
+    pub is_paid: bool,
+    pub is_deleted: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, sqlx::FromRow)]
+pub struct Payment {
+    pub id: i32,
+    pub contract_id: i32,
+    pub amount: BigDecimal,
+    pub payment_date: DateTime<Utc>,
+    pub is_deleted: bool,
 }

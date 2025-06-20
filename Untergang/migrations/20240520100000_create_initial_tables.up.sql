@@ -64,3 +64,12 @@ CREATE TABLE IF NOT EXISTS corporate_contract (
     is_paid BOOLEAN NOT NULL DEFAULT FALSE,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE
 ); 
+
+
+CREATE TABLE IF NOT EXISTS payment (
+    id SERIAL PRIMARY KEY, 
+    contract_id INTEGER REFERENCES private_contract(id) OR corporate_contract(id),
+    amount NUMERIC(10, 2) NOT NULL,
+    payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE
+)

@@ -1,4 +1,5 @@
-use crate::client::{ClientId, Contract};
+use crate::client::{ClientId, Contract, Payment};
+use crate::handler::{AppError, AppError::InternalServerError};
 use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
@@ -233,7 +234,7 @@ pub async fn get_contract_by_id(
     match client_id {
         ClientId::Individual(pesel) => {
             let result = sqlx::query!(
-                "SELECT id, price, product_id, client_id, start_date, end_date, years_supported FROM private_contract WHERE id = $1 AND client_id = $2 AND is_deleted = FALSE",
+                "SELECT id, price, product_id, client_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted FROM private_contract WHERE id = $1 AND client_id = $2 AND is_deleted = FALSE",
                 contract_id,
                 pesel,
             )
@@ -251,13 +252,16 @@ pub async fn get_contract_by_id(
                     start_date: DateTime::from_naive_utc_and_offset(contract.start_date, Utc),
                     end_date: DateTime::from_naive_utc_and_offset(contract.end_date, Utc),
                     years_supported: contract.years_supported,
+                    is_signed: contract.is_signed,
+                    is_paid: contract.is_paid,
+                    is_deleted: contract.is_deleted,
                 }),
                 None => Err(sqlx::Error::RowNotFound),
             }
         }
         ClientId::Company(krs) => {
             let result = sqlx::query!(
-                "SELECT id, price, product_id, client_id, start_date, end_date, years_supported FROM corporate_contract WHERE id = $1 AND client_id = $2 AND is_deleted = FALSE",
+                "SELECT id, price, product_id, client_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted FROM corporate_contract WHERE id = $1 AND client_id = $2 AND is_deleted = FALSE",
                 contract_id,
                 krs,
             )
@@ -275,6 +279,9 @@ pub async fn get_contract_by_id(
                     start_date: DateTime::from_naive_utc_and_offset(contract.start_date, Utc),
                     end_date: DateTime::from_naive_utc_and_offset(contract.end_date, Utc),
                     years_supported: contract.years_supported,
+                    is_signed: contract.is_signed,
+                    is_paid: contract.is_paid,
+                    is_deleted: contract.is_deleted,
                 }),
                 None => Err(sqlx::Error::RowNotFound),
             }
@@ -283,35 +290,131 @@ pub async fn get_contract_by_id(
 }
 
 pub async fn pay_for_contract(
-    pool: Pool<Postgres>,
+    pool: &Pool<Postgres>,
     contract_id: i32,
-    client_id: ClientId,
-) -> Result<(), sqlx::Error> {
+    client_id: &ClientId,
+    amount: f64,
+) -> Result<(), AppError> {
     match client_id {
-        ClientId::Individual(pesel) => {
-            match sqlx::query!(
-                "UPDATE private_contract SET is_paid = TRUE WHERE id = $1 AND client_id = $2",
-                contract_id,
-                pesel
-            )
-            .execute(&pool)
-            .await
-            {
+        ClientId::Individual(_pesel) => {
+            match payments::create_payment_record_in_db(pool, contract_id, amount)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!("Failed to create payment: {:?}", e))
+                }) {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e),
             }
         }
-        ClientId::Company(krs) => {
-            match sqlx::query!(
-                "UPDATE corporate_contract SET is_paid = TRUE WHERE id = $1 AND client_id = $2",
-                contract_id,
-                krs
-            )
-            .execute(&pool)
-            .await
-            {
+        ClientId::Company(_krs) => {
+            match payments::create_payment_record_in_db(pool, contract_id, amount)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!("Failed to create payment: {:?}", e))
+                }) {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+pub async fn get_payments_for_contract(
+    pool: &Pool<Postgres>,
+    contract_id: i32,
+) -> Result<Vec<Payment>, AppError> {
+    let result = match sqlx::query!(
+        "SELECT id, contract_id, amount, payment_date, is_deleted FROM payment WHERE contract_id = $1",
+        contract_id
+    )
+        .fetch_all(pool)
+        .await? {
+            Ok(payments) => payments,
+            Err(e) =>  return Err(AppError::InternalServerError(format!("Failed to get payments: {}", e))),
+        };
+
+    Ok(result)
+}
+
+pub mod payments {
+    use super::*;
+    use crate::db::get_payments_for_contract;
+    use bigdecimal::ToPrimitive;
+
+    pub async fn check_outstanding_payments(
+        pool: &Pool<Postgres>,
+        contract_id: i32,
+    ) -> Result<f64, AppError> {
+        let payments = get_payments_for_contract(pool, contract_id)
+            .await
+            .map_err(|e| {
+                AppError::InternalServerError(format!("Failed to get payments: {:?}", e))
+            })?;
+
+        let outstanding_payments = payments
+            .iter()
+            .map(|p| p.amount.to_f64().expect("Failed to convert amount to f64"))
+            .sum();
+
+        Ok(outstanding_payments)
+    }
+
+    pub async fn create_payment_record_in_db(
+        pool: &Pool<Postgres>,
+        contract_id: i32,
+        amount: f64,
+    ) -> Result<(), AppError> {
+        match sqlx::query!(
+            "INSERT INTO payment (contract_id, amount) VALUES ($1, $2)",
+            contract_id,
+            amount
+        )
+        .execute(pool)
+        .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(AppError::InternalServerError(format!(
+                "Failed to create payment: {:?}",
+                e
+            ))),
+        }
+    }
+
+    pub async fn handle_full_payment(
+        pool: &Pool<Postgres>,
+        contract_id: i32,
+        client_id: ClientId,
+    ) -> Result<(), AppError> {
+        match client_id {
+            ClientId::Individual(pesel) => {
+                match sqlx::query!(
+                    "UPDATE private_contract SET is_paid = TRUE WHERE id = $1 AND client_id = $2",
+                    contract_id,
+                    pesel
+                )
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!("Failed to handle full payment: {:?}", e))
+                }) {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e),
+                }
+            }
+            ClientId::Company(krs) => {
+                match sqlx::query!(
+                    "UPDATE corporate_contract SET is_paid = TRUE WHERE id = $1 AND client_id = $2",
+                    contract_id,
+                    krs
+                )
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!("Failed to handle full payment: {:?}", e))
+                }) {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e),
+                }
             }
         }
     }
