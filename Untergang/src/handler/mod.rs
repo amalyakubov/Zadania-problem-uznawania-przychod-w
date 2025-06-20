@@ -227,7 +227,7 @@ pub async fn create_contract(
 }
 
 #[derive(Clone, serde::Deserialize)]
-struct InstallmentsPayment {
+pub struct InstallmentsPayment {
     contract_id: i32,
     client_id: ClientId,
     amount_per_installment: f64,
@@ -235,14 +235,14 @@ struct InstallmentsPayment {
 }
 
 #[derive(Clone, serde::Deserialize)]
-struct SinglePayment {
+pub struct SinglePayment {
     contract_id: i32,
     amount: f64,
     client_id: ClientId,
 }
 
 #[derive(Clone, serde::Deserialize)]
-enum PaymentRequest {
+pub enum PaymentRequest {
     Installments(InstallmentsPayment),
     SinglePayment(SinglePayment),
 }
@@ -307,6 +307,15 @@ pub async fn create_payment(
             Ok((StatusCode::OK, "Payment successful".to_string()))
         }
         PaymentRequest::SinglePayment(single_payment) => {
+            if BigDecimal::from_f64(single_payment.amount)
+                .expect("Failed to convert the payment amount into bigdecimal")
+                != contract.price
+            {
+                return Err(AppError::BadRequest(
+                    "Amount does not match contract price".to_string(),
+                ));
+            }
+
             pay_for_contract(pool, contract_id, client_id)
                 .await
                 .map_err(|e| {
