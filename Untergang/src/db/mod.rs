@@ -403,3 +403,43 @@ pub mod payments {
         }
     }
 }
+
+pub async fn create_subscription_in_db(
+    pool: &Pool<Postgres>,
+    client_id: &ClientId, 
+    software_id: &i32,
+    name: &String,
+    price: &BigDecimal,
+    period: &i32,
+) -> Result<(), AppError> {
+    match client_id { 
+        ClientId::Individual(pesel) => {
+            sqlx::query!(
+                "INSERT INTO subscription (client_type, client_pesel, software_id, name, price, period) VALUES ($1, $2, $3, $4, $5, $6)",
+                "private",
+                pesel,
+                software_id,
+                name,
+                price,
+                period
+            )
+            .execute(pool)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to create subscription: {:?}", e)))
+        }
+        ClientId::Company(krs) => {
+            sqlx::query!(
+                "INSERT INTO subscription (client_type, client_krs, software_id, name, price, period) VALUES ($1, $2, $3, $4, $5, $6)",
+                "corporate",
+                krs,
+                software_id,
+                name,
+                price,
+                period
+            )
+            .execute(pool)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to create subscription: {:?}", e)))
+        }
+    }
+}

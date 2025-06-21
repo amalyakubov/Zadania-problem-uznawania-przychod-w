@@ -265,6 +265,7 @@ pub async fn create_payment(
         }
     };
 
+    //TODO: Check if the client exists in the db
     let client_exists = check_if_client_exists(&pool, &client_id)
         .await
         .map_err(|e| {
@@ -393,5 +394,45 @@ pub async fn create_payment(
 
             Ok((StatusCode::OK, "Payment successful".to_string()))
         }
+    }
+}
+
+pub mod subscriptions {
+    use axum::extract::State;
+
+    use crate::{client::ClientId, db::check_if_client_exists, handler::AppError, sqlx::Pool};
+
+    #[derive(Clone, serde::Deserialize)]
+    pub struct SubscriptionRequest {
+        client_id: ClientId,
+        software_id: i32,
+        price: f64,
+        name: String,
+        period: i32,
+    }
+
+    pub async fn create_subscription(
+        State(pool): State<Pool<Postgres>>,
+        Json(subscription_request): Json<SubscriptionRequest>,
+    ) -> Result<(StatusCode, String), AppError> {
+        // We don't need to check if the client exists, because its validation is done in the db
+
+        let price = BigDecimal::from_f64(subscription_request.price)
+            .expect("Failed to convert price to BigDecimal");
+
+        create_subscription_in_db(
+            &pool,
+            &subscription_request.client_id,
+            &subscription_request.software_id,
+            &subscription_request.name,
+            &price,
+            &subscription_request.period,
+        )
+        .await
+        .map_err(|e| {
+            AppError::InternalServerError(format!("Failed to create subscription: {}", e))
+        })?;
+
+        Ok((StatusCode::CREATED, "Subscription created".to_string()))
     }
 }
