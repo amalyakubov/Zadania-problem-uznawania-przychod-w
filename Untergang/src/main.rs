@@ -1,12 +1,9 @@
 use axum::{
-    extract::Json,
-    http::StatusCode,
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
     Router,
 };
 
 mod client;
-use client::Client;
 
 mod db;
 use db::connect_db;
@@ -34,11 +31,9 @@ async fn main() {
         .route("/client", post(handler::create_client))
         // DELETE /client
         .route("/client", delete(handler::delete_client))
-        // PUT /client TODO: add update functionality
-        .route(
-            "/client",
-            put(move |Json(client): Json<Client>| async move { (StatusCode::OK, Json(client)) }),
-        )
+        // PUT /client
+        .route("/client", put(handler::update_client))
+        // POST /contract
         .route("/contract", post(handler::create_contract))
         .route("/payment", post(handler::create_payment))
         .with_state(pool);
