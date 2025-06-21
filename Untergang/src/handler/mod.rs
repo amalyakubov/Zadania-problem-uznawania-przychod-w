@@ -106,12 +106,12 @@ pub async fn delete_client(
     }
 }
 
-// TODO: Prepare migrations for this
+// Updates a client based on the client id. -> Cant' update client's id
 pub async fn update_client(
     State(pool): State<Pool<Postgres>>,
     Json(client): Json<Client>,
 ) -> Result<(StatusCode, String), AppError> {
-    let result = match client {
+    let result: Result<_, _> = match client {
         Client::Individual(individual) => {
             sqlx::query!(
                 "UPDATE personal_client SET first_name = $1, last_name = $2, email = $3, phone_number = $4 WHERE pesel = $5",
