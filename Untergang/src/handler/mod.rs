@@ -106,7 +106,7 @@ pub async fn delete_client(
     }
 }
 
-// Updates a client based on the client id. -> Cant' update client's id
+// Updates a client based on the client id. -> Can't update client's id
 pub async fn update_client(
     State(pool): State<Pool<Postgres>>,
     Json(client): Json<Client>,
