@@ -178,27 +178,6 @@ pub async fn create_contract(
         ));
     }
 
-    // check if product and client exist
-    let (product_exists, client_exists) = check_product_and_client_exist(
-        &pool,
-        purchase_request.product_id,
-        purchase_request.client_id.clone(),
-    )
-    .await
-    .map_err(|e| {
-        AppError::InternalServerError(format!(
-            "Failed to check if product and client exist: {}",
-            e
-        ))
-    })?;
-
-    if !product_exists {
-        return Err(AppError::BadRequest("Product does not exist".to_string()));
-    }
-    if !client_exists {
-        return Err(AppError::BadRequest("Client does not exist".to_string()));
-    }
-
     // get discount for client
     let discount = find_discounts_for_client(
         &pool,
@@ -265,15 +244,7 @@ pub async fn create_payment(
         }
     };
 
-    //TODO: Check if the client exists in the db
-    let client_exists = check_if_client_exists(&pool, &client_id)
-        .await
-        .map_err(|e| {
-            AppError::InternalServerError(format!("Failed to check if client exists: {}", e))
-        })?;
-    if !client_exists {
-        return Err(AppError::BadRequest("Client does not exist".to_string()));
-    }
+    // We dont' need to check if the client exists, because its validation is done in the db
 
     // Try to get the contract - if it doesn't exist or doesn't belong to the client, this will fail
     let contract = get_contract_by_id(&pool, client_id.clone(), contract_id)
