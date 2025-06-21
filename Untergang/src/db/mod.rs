@@ -164,12 +164,12 @@ pub async fn get_price_for_product(
 
 pub async fn create_contract_in_db(
     pool: &Pool<Postgres>,
-    price: BigDecimal,
-    product_id: i32,
-    client_id: ClientId,
-    start_date: DateTime<Utc>,
-    end_date: DateTime<Utc>,
-    years_supported: i32,
+    price: &BigDecimal,
+    product_id: &i32,
+    client_id: &ClientId,
+    start_date: &DateTime<Utc>,
+    end_date: &DateTime<Utc>,
+    years_supported: &i32,
 ) -> Result<(), sqlx::Error> {
     let (contract_type, personal_client_pesel, company_client_krs) = match client_id {
         ClientId::Individual(pesel) => ("private", Some(pesel), None),

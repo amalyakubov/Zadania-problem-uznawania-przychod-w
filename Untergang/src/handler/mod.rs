@@ -218,12 +218,12 @@ pub async fn create_contract(
 
     create_contract_in_db(
         &pool,
-        final_price,
-        purchase_request.product_id,
-        purchase_request.client_id.clone(),
-        purchase_request.start_date,
-        purchase_request.end_date,
-        purchase_request.years_supported,
+        &final_price,
+        &purchase_request.product_id,
+        &purchase_request.client_id,
+        &purchase_request.start_date,
+        &purchase_request.end_date,
+        &purchase_request.years_supported,
     )
     .await
     .map_err(|e| AppError::InternalServerError(format!("Failed to create contract: {}", e)))?;
@@ -312,12 +312,12 @@ pub async fn create_payment(
 
         let new_contract = create_contract_in_db(
             &pool,
-            contract.price.clone(),
-            contract.product_id,
-            client_id.clone(),
-            contract.start_date,
-            contract.end_date,
-            contract.years_supported,
+            &contract.price,
+            &contract.product_id,
+            &client_id,
+            &contract.start_date,
+            &contract.end_date,
+            &contract.years_supported,
         )
         .await
         .map_err(|e| AppError::InternalServerError(format!("Failed to create contract: {}", e)))?;
