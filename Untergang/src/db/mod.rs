@@ -1,6 +1,6 @@
-use crate::client::{ClientId, Contract, Payment};
+use crate::client::{ClientId, Contract, Payment, Subscription};
 use crate::handler::AppError;
-use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
+use bigdecimal::{BigDecimal, FromPrimitive};
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
 
@@ -343,7 +343,6 @@ pub async fn get_payments_for_contract(
 pub mod payments {
     use super::*;
     use crate::db::get_payments_for_contract;
-    use bigdecimal::ToPrimitive;
 
     pub async fn check_outstanding_payments(
         pool: &Pool<Postgres>,
@@ -541,4 +540,59 @@ pub async fn create_subscription_payment_in_db(
         }
     }
     Ok(())
+}
+
+pub async fn get_subscription_by_id(
+    pool: &Pool<Postgres>,
+    subscription_id: i32,
+    client_id: &ClientId,
+) -> Result<Subscription, AppError> {
+    match client_id {
+        ClientId::Individual(pesel) => {
+            let result = sqlx::query!(
+                "SELECT id, software_id, client_pesel, name, period_length, price FROM subscription WHERE id = $1 AND client_pesel = $2",
+                subscription_id,
+                pesel
+            )
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to get subscription: {:?}", e)))?;
+
+            match result {
+                Some(sub) => Ok(Subscription {
+                    id: sub.id,
+                    software_id: sub.software_id.expect("Software ID not found"),
+                    client_id: ClientId::Individual(
+                        sub.client_pesel.expect("Client PESEL not found"),
+                    ),
+                    name: sub.name,
+                    period_length: sub.period_length,
+                    price: sub.price,
+                }),
+                None => Err(AppError::BadRequest("Subscription not found".to_string())),
+            }
+        }
+        ClientId::Company(krs) => {
+            let result = sqlx::query!(
+                "SELECT id, software_id, client_krs, name, period_length, price FROM subscription WHERE id = $1 AND client_krs = $2",
+                subscription_id,
+                krs
+            )
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to get subscription: {:?}", e)))?;
+
+            match result {
+                Some(sub) => Ok(Subscription {
+                    id: sub.id,
+                    software_id: sub.software_id.expect("Software ID not found"),
+                    client_id: ClientId::Company(sub.client_krs.expect("Client KRS not found")),
+                    name: sub.name,
+                    period_length: sub.period_length,
+                    price: sub.price,
+                }),
+                None => Err(AppError::BadRequest("Subscription not found".to_string())),
+            }
+        }
+    }
 }

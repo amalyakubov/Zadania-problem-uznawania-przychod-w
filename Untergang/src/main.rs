@@ -36,6 +36,14 @@ async fn main() {
         // POST /contract
         .route("/contract", post(handler::create_contract))
         .route("/payment", post(handler::create_payment))
+        .route(
+            "/subscription",
+            post(handler::subscriptions::create_subscription),
+        )
+        .route(
+            "/subscription/payment",
+            post(handler::subscriptions::pay_for_subscription),
+        )
         .with_state(pool);
 
     // run our app with hyper, listening globally on port 3000
