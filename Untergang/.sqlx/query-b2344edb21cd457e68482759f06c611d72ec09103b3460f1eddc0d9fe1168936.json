@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, price, product_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted \n                 FROM contract \n                 WHERE id = $1 AND company_client_krs = $2 AND is_deleted = FALSE",
+  "query": "SELECT id, price, product_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted\n                 FROM contract\n                 WHERE id = $1 AND personal_client_pesel = $2 AND is_deleted = FALSE",
   "describe": {
     "columns": [
       {
@@ -67,5 +67,5 @@
       false
     ]
   },
-  "hash": "f2a940af468d67ac1c65743a55c04671ff5a549ef66ebdcf522d0111ee70dca6"
+  "hash": "b2344edb21cd457e68482759f06c611d72ec09103b3460f1eddc0d9fe1168936"
 }

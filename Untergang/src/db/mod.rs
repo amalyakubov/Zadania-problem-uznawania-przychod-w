@@ -432,7 +432,7 @@ pub async fn create_subscription_in_db(
     match client_id {
         ClientId::Individual(pesel) => {
             let result = sqlx::query_scalar!(
-                "INSERT INTO subscription (client_type, client_pesel, software_id, name, price, period) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                "INSERT INTO subscription (client_type, client_pesel, software_id, name, price, period_length) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
                 "private",
                 pesel,
                 software_id,
@@ -440,14 +440,14 @@ pub async fn create_subscription_in_db(
                 price,
                 period
             )
-            .execute(pool)
+            .fetch_one(pool)
             .await
             .map_err(|e| AppError::InternalServerError(format!("Failed to create subscription: {:?}", e)))?;
             Ok(result)
         }
         ClientId::Company(krs) => {
             let result = sqlx::query_scalar!(
-                "INSERT INTO subscription (client_type, client_krs, software_id, name, price, period) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                "INSERT INTO subscription (client_type, client_krs, software_id, name, price, period_length) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
                 "corporate",
                 krs,
                 software_id,
@@ -455,7 +455,7 @@ pub async fn create_subscription_in_db(
                 price,
                 period
             )
-            .execute(pool)
+            .fetch_one(pool)
             .await
             .map_err(|e| AppError::InternalServerError(format!("Failed to create subscription: {:?}", e)))?;
             Ok(result)

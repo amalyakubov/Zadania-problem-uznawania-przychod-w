@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO subscription (client_type, client_pesel, software_id, name, price, period_length) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Varchar",
+        "Int4",
+        "Text",
+        "Numeric",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0ff92f5824901fb3109f5d4cea3ed87e65ad79ec2c46b68e0716231bea98cb6c"
+}

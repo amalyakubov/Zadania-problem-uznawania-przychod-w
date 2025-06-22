@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO subscription_payment (subscription_id, price, client_type, client_pesel) VALUES ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Numeric",
+        "Text",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a4194603f9bed1272601239ae1e3ea97a694d11e65f3bd1b3421a4143bf47da1"
+}

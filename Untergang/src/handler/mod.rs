@@ -1,10 +1,9 @@
-use crate::db::payments;
 use axum::{
     extract::{Json, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
+use bigdecimal::{BigDecimal, FromPrimitive};
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
 
@@ -16,6 +15,7 @@ use crate::{
         get_contract_by_id, get_highest_discount_for_product, get_price_for_product,
         pay_for_contract,
     },
+    db::payments,
 };
 
 #[derive(Debug)]
@@ -283,7 +283,7 @@ pub async fn create_payment(
         .await
         .map_err(|e| AppError::InternalServerError(format!("Failed to create payment: {:?}", e)))?;
 
-        let new_contract = create_contract_in_db(
+        let _new_contract = create_contract_in_db(
             &pool,
             &contract.price,
             &contract.product_id,
@@ -370,14 +370,14 @@ pub async fn create_payment(
 }
 
 pub mod subscriptions {
-    use super::*;   
+    use super::*;
 
     use crate::{
         client::ClientId,
         db::{
             check_if_client_exists, check_if_client_has_subscriptions_or_contracts,
             check_if_is_first_subscription_payment, create_subscription_in_db,
-            get_highest_discount_for_product,
+            get_highest_discount_for_product, create_subscription_payment_in_db,
         },
         handler::AppError,
     };
@@ -458,7 +458,7 @@ pub mod subscriptions {
         }
 
         if is_first_subscription_payment {
-            discount += get_highest_discount_for_product(state, &product_id)
+            let highest_discount = get_highest_discount_for_product(state, &product_id)
                 .await
                 .map_err(|e| {
                     AppError::InternalServerError(format!(
@@ -466,12 +466,19 @@ pub mod subscriptions {
                         e
                     ))
                 })?;
+
+            discount += highest_discount.unwrap_or(BigDecimal::from_f64(0.0).expect("Failed to convert 0.0 to BigDecimal"));
         }
 
         let final_price = price
             * (BigDecimal::from_f64(1.0).expect("Failed to convert 1.0 to BigDecimal") - discount);
 
-        create_subscription_payment_in_db(state, subscription_id, final_price)
+        create_subscription_payment_in_db(state, client_id, &subscription_id, &final_price)
+            .await
+            .map_err(|e| {
+                AppError::InternalServerError(format!("Failed to create subscription payment: {:?}", e))
+            })?;
 
+        Ok(())
     }
 }
