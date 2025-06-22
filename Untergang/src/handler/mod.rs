@@ -1,10 +1,9 @@
-use crate::db::payments;
 use axum::{
     extract::{Json, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
+use bigdecimal::{BigDecimal, FromPrimitive};
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
 
@@ -13,8 +12,10 @@ use crate::{
     db::{
         check_if_client_exists, check_if_client_has_contract_for_product,
         check_product_and_client_exist, create_contract_in_db, find_discounts_for_client,
-        get_contract_by_id, get_price_for_product, pay_for_contract,
+        get_contract_by_id, get_highest_discount_for_product, get_price_for_product,
+        pay_for_contract,
     },
+    db::payments,
 };
 
 #[derive(Debug)]
@@ -116,7 +117,7 @@ pub async fn update_client(
             sqlx::query!(
                 "UPDATE personal_client SET first_name = $1, last_name = $2, email = $3, phone_number = $4 WHERE pesel = $5",
                 individual.first_name,
-                individual.last_name,
+                individual.last_name,   
                 individual.email,
                 individual.phone_number,
                 individual.pesel,
@@ -176,27 +177,6 @@ pub async fn create_contract(
         return Err(AppError::BadRequest(
             "Client already has contract for this product".to_string(),
         ));
-    }
-
-    // check if product and client exist
-    let (product_exists, client_exists) = check_product_and_client_exist(
-        &pool,
-        purchase_request.product_id,
-        purchase_request.client_id.clone(),
-    )
-    .await
-    .map_err(|e| {
-        AppError::InternalServerError(format!(
-            "Failed to check if product and client exist: {}",
-            e
-        ))
-    })?;
-
-    if !product_exists {
-        return Err(AppError::BadRequest("Product does not exist".to_string()));
-    }
-    if !client_exists {
-        return Err(AppError::BadRequest("Client does not exist".to_string()));
     }
 
     // get discount for client
@@ -265,14 +245,7 @@ pub async fn create_payment(
         }
     };
 
-    let client_exists = check_if_client_exists(&pool, &client_id)
-        .await
-        .map_err(|e| {
-            AppError::InternalServerError(format!("Failed to check if client exists: {}", e))
-        })?;
-    if !client_exists {
-        return Err(AppError::BadRequest("Client does not exist".to_string()));
-    }
+    // We dont' need to check if the client exists, because its validation is done in the db
 
     // Try to get the contract - if it doesn't exist or doesn't belong to the client, this will fail
     let contract = get_contract_by_id(&pool, client_id.clone(), contract_id)
@@ -310,7 +283,7 @@ pub async fn create_payment(
         .await
         .map_err(|e| AppError::InternalServerError(format!("Failed to create payment: {:?}", e)))?;
 
-        let new_contract = create_contract_in_db(
+        let _new_contract = create_contract_in_db(
             &pool,
             &contract.price,
             &contract.product_id,
@@ -393,5 +366,147 @@ pub async fn create_payment(
 
             Ok((StatusCode::OK, "Payment successful".to_string()))
         }
+    }
+}
+
+pub mod subscriptions {
+    use super::*;
+
+    use crate::{
+        client::ClientId,
+        db::{
+            check_if_client_exists, check_if_client_has_subscriptions_or_contracts,
+            check_if_is_first_subscription_payment, create_subscription_in_db,
+            create_subscription_payment_in_db, get_highest_discount_for_product,
+            get_subscription_by_id,
+        },
+        handler::AppError,
+    };
+
+    #[derive(Clone, serde::Deserialize)]
+    pub struct SubscriptionRequest {
+        client_id: ClientId,
+        software_id: i32,
+        price: f64,
+        name: String,
+        period: i32,
+    }
+
+    pub async fn create_subscription(
+        State(pool): State<Pool<Postgres>>,
+        Json(subscription_request): Json<SubscriptionRequest>,
+    ) -> Result<(StatusCode, String), AppError> {
+        let price = BigDecimal::from_f64(subscription_request.price)
+            .expect("Failed to convert price to BigDecimal");
+
+        let subscription_id = create_subscription_in_db(
+            &pool,
+            &subscription_request.client_id,
+            &subscription_request.software_id,
+            &subscription_request.name,
+            &price,
+            &subscription_request.period,
+        )
+        .await
+        .map_err(|e| {
+            AppError::InternalServerError(format!("Failed to create subscription: {:?}", e))
+        })?;
+
+        let is_recurring_customer = check_if_client_has_subscriptions_or_contracts(
+            &pool,
+            &subscription_request.client_id,
+        )
+        .await
+        .map_err(|e| {
+            AppError::InternalServerError(format!(
+                "Failed to check if the client is a recurring customer: {:?}",
+                e
+            ))
+        })?;
+
+        let mut discount = BigDecimal::from_f64(0.0).expect("Failed to convert 0.0 to BigDecimal");
+
+        if is_recurring_customer {
+            discount = BigDecimal::from_f64(0.05).expect("Failed to convert 0.05 to BigDecimal");
+        }
+
+        let highest_discount =
+            get_highest_discount_for_product(&pool, &subscription_request.software_id)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!("Failed to find discounts for client: {:?}", e))
+                })?;
+
+        discount += highest_discount
+            .unwrap_or(BigDecimal::from_f64(0.0).expect("Failed to convert 0.0 to BigDecimal"));
+
+        let final_price = &price
+            * (BigDecimal::from_f64(1.0).expect("Failed to convert 1.0 to BigDecimal") - discount);
+
+        create_subscription_payment_in_db(
+            &pool,
+            &subscription_request.client_id,
+            &subscription_id,
+            &final_price,
+        )
+        .await
+        .map_err(|e| {
+            AppError::InternalServerError(format!(
+                "Failed to create subscription payment: {:?}",
+                e
+            ))
+        })?;
+
+        Ok((StatusCode::CREATED, "Subscription created".to_string()))
+    }
+
+    #[derive(Clone, serde::Deserialize)]
+    pub struct SubscriptionPaymentRequest {
+        client_id: ClientId,
+        subscription_id: i32,
+    }
+
+    pub async fn pay_for_subscription(
+        State(pool): State<Pool<Postgres>>,
+        Json(request): Json<SubscriptionPaymentRequest>,
+    ) -> Result<(StatusCode, String), AppError> {
+        let subscription =
+            get_subscription_by_id(&pool, request.subscription_id, &request.client_id)
+                .await?;
+
+        let is_recurring_customer =
+            check_if_client_has_subscriptions_or_contracts(&pool, &request.client_id)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!(
+                        "Failed to check if the client is a recurring customer: {:?}",
+                        e
+                    ))
+                })?;
+
+        let mut discount = BigDecimal::from_f64(0.0).expect("Failed to convert 0.0 to BigDecimal");
+
+        if is_recurring_customer {
+            discount = BigDecimal::from_f64(0.05).expect("Failed to convert 0.05 to BigDecimal");
+        }
+
+        let final_price = &subscription.price
+            * (BigDecimal::from_f64(1.0).expect("Failed to convert 1.0 to BigDecimal") - discount);
+
+        create_subscription_payment_in_db(
+            &pool,
+            &request.client_id,
+            &request.subscription_id,
+            &final_price,
+        )
+        .await
+        .map_err(|e| {
+            AppError::InternalServerError(format!(
+                "Failed to create subscription payment: {:?}",
+                e
+            ))
+        })?;
+
+        Ok((StatusCode::OK, "Payment successful".to_string()))
     }
 }

@@ -1,6 +1,6 @@
-use crate::client::{ClientId, Contract, Payment};
+use crate::client::{ClientId, Contract, Payment, Subscription};
 use crate::handler::AppError;
-use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
+use bigdecimal::{BigDecimal, FromPrimitive};
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
 
@@ -65,6 +65,23 @@ pub async fn check_product_and_client_exist(
     );
 
     Ok((product_exists?, client_exists?))
+}
+
+pub async fn get_highest_discount_for_product(
+    pool: &Pool<Postgres>,
+    product_id: &i32,
+) -> Result<Option<BigDecimal>, sqlx::Error> {
+    let result = sqlx::query_scalar::<_, BigDecimal>(
+        "SELECT percentage FROM discount WHERE discounted_products = $1 AND is_deleted = FALSE AND start_date <= CURRENT_DATE AND end_date > CURRENT_DATE ORDER BY percentage DESC LIMIT 1",
+    )
+    .bind(product_id)
+    .fetch_optional(pool)
+    .await?;
+
+    match result {
+        Some(discount) => Ok(Some(discount)),
+        None => Ok(None),
+    }
 }
 
 pub async fn find_discounts_for_client(
@@ -177,8 +194,8 @@ pub async fn create_contract_in_db(
     };
 
     sqlx::query!(
-        "INSERT INTO contract (contract_type, personal_client_pesel, company_client_krs, product_id, price, start_date, end_date, years_supported, is_signed, is_deleted) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", 
+        "INSERT INTO contract (contract_type, personal_client_pesel, company_client_krs, product_id, price, start_date, end_date, years_supported, is_signed, is_deleted)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         contract_type, personal_client_pesel, company_client_krs, product_id, price, start_date.naive_utc(), end_date.naive_utc(), years_supported, false, false
     )
     .execute(pool)
@@ -223,8 +240,8 @@ pub async fn get_contract_by_id(
     match client_id {
         ClientId::Individual(pesel) => {
             let result = sqlx::query!(
-                "SELECT id, price, product_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted 
-                 FROM contract 
+                "SELECT id, price, product_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted
+                 FROM contract
                  WHERE id = $1 AND personal_client_pesel = $2 AND is_deleted = FALSE",
                 contract_id,
                 pesel,
@@ -252,8 +269,8 @@ pub async fn get_contract_by_id(
         }
         ClientId::Company(krs) => {
             let result = sqlx::query!(
-                "SELECT id, price, product_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted 
-                 FROM contract 
+                "SELECT id, price, product_id, start_date, end_date, years_supported, is_signed, is_paid, is_deleted
+                 FROM contract
                  WHERE id = $1 AND company_client_krs = $2 AND is_deleted = FALSE",
                 contract_id,
                 krs,
@@ -326,7 +343,6 @@ pub async fn get_payments_for_contract(
 pub mod payments {
     use super::*;
     use crate::db::get_payments_for_contract;
-    use bigdecimal::ToPrimitive;
 
     pub async fn check_outstanding_payments(
         pool: &Pool<Postgres>,
@@ -399,6 +415,183 @@ pub mod payments {
                     Ok(_) => Ok(()),
                     Err(e) => Err(e),
                 }
+            }
+        }
+    }
+}
+
+pub async fn create_subscription_in_db(
+    pool: &Pool<Postgres>,
+    client_id: &ClientId,
+    software_id: &i32,
+    name: &String,
+    price: &BigDecimal,
+    period: &i32,
+) -> Result<i32, AppError> {
+    match client_id {
+        ClientId::Individual(pesel) => {
+            let result = sqlx::query_scalar!(
+                "INSERT INTO subscription (client_type, client_pesel, software_id, name, price, period_length) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                "private",
+                pesel,
+                software_id,
+                name,
+                price,
+                period
+            )
+            .fetch_one(pool)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to create subscription: {:?}", e)))?;
+            Ok(result)
+        }
+        ClientId::Company(krs) => {
+            let result = sqlx::query_scalar!(
+                "INSERT INTO subscription (client_type, client_krs, software_id, name, price, period_length) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                "corporate",
+                krs,
+                software_id,
+                name,
+                price,
+                period
+            )
+            .fetch_one(pool)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to create subscription: {:?}", e)))?;
+            Ok(result)
+        }
+    }
+}
+
+pub async fn check_if_is_first_subscription_payment(
+    pool: &Pool<Postgres>,
+    subscription_id: i32,
+) -> Result<bool, AppError> {
+    let result = sqlx::query_scalar::<_, bool>(
+        "SELECT NOT EXISTS(SELECT 1 FROM subscription_payment WHERE subscription_id = $1 AND is_deleted = FALSE)",
+    )
+    .bind(subscription_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| AppError::InternalServerError(format!("Failed to check subscription payment: {:?}", e)))?;
+
+    Ok(result)
+}
+
+pub async fn check_if_client_has_subscriptions_or_contracts(
+    pool: &Pool<Postgres>,
+    client_id: &ClientId,
+) -> Result<bool, AppError> {
+    match client_id {
+        ClientId::Individual(pesel) => {
+            let result = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM subscription WHERE client_pesel = $1 AND is_deleted = FALSE) OR EXISTS(SELECT 1 FROM contract WHERE personal_client_pesel = $1 AND is_deleted = FALSE)",
+            )
+            .bind(pesel)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to check client subscriptions or contracts: {:?}", e)))?;
+
+            Ok(result.unwrap_or(false))
+        }
+        ClientId::Company(krs) => {
+            let result = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM subscription WHERE client_krs = $1 AND is_deleted = FALSE) OR EXISTS(SELECT 1 FROM contract WHERE company_client_krs = $1 AND is_deleted = FALSE)",
+            )
+            .bind(krs)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to check client subscriptions or contracts: {:?}", e)))?;
+
+            Ok(result.unwrap_or(false))
+        }
+    }
+}
+
+pub async fn create_subscription_payment_in_db(
+    state: &Pool<Postgres>,
+    client_id: &ClientId,
+    subscription_id: &i32,
+    price: &BigDecimal,
+) -> Result<(), AppError> {
+    match client_id {
+        ClientId::Individual(pesel) => {
+            sqlx::query!(
+                "INSERT INTO subscription_payment (subscription_id, price, client_type, client_pesel) VALUES ($1, $2, $3, $4)",
+                subscription_id,
+                price,
+                "private",
+                pesel
+            )
+            .execute(state)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to create subscription payment: {:?}", e)))?;
+        }
+        ClientId::Company(krs) => {
+            sqlx::query!(
+                "INSERT INTO subscription_payment (subscription_id, price, client_type, client_krs) VALUES ($1, $2, $3, $4)",
+                subscription_id,
+                price,
+                "corporate",
+                krs
+            )
+            .execute(state)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to create subscription payment: {:?}", e)))?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn get_subscription_by_id(
+    pool: &Pool<Postgres>,
+    subscription_id: i32,
+    client_id: &ClientId,
+) -> Result<Subscription, AppError> {
+    match client_id {
+        ClientId::Individual(pesel) => {
+            let result = sqlx::query!(
+                "SELECT id, software_id, client_pesel, name, period_length, price FROM subscription WHERE id = $1 AND client_pesel = $2",
+                subscription_id,
+                pesel
+            )
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to get subscription: {:?}", e)))?;
+
+            match result {
+                Some(sub) => Ok(Subscription {
+                    id: sub.id,
+                    software_id: sub.software_id.expect("Software ID not found"),
+                    client_id: ClientId::Individual(
+                        sub.client_pesel.expect("Client PESEL not found"),
+                    ),
+                    name: sub.name,
+                    period_length: sub.period_length,
+                    price: sub.price,
+                }),
+                None => Err(AppError::BadRequest("Subscription not found".to_string())),
+            }
+        }
+        ClientId::Company(krs) => {
+            let result = sqlx::query!(
+                "SELECT id, software_id, client_krs, name, period_length, price FROM subscription WHERE id = $1 AND client_krs = $2",
+                subscription_id,
+                krs
+            )
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("Failed to get subscription: {:?}", e)))?;
+
+            match result {
+                Some(sub) => Ok(Subscription {
+                    id: sub.id,
+                    software_id: sub.software_id.expect("Software ID not found"),
+                    client_id: ClientId::Company(sub.client_krs.expect("Client KRS not found")),
+                    name: sub.name,
+                    period_length: sub.period_length,
+                    price: sub.price,
+                }),
+                None => Err(AppError::BadRequest("Subscription not found".to_string())),
             }
         }
     }

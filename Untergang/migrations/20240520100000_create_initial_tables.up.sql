@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS discount (
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+
 -- Create a unified contracts table
 CREATE TABLE IF NOT EXISTS contract (
     id SERIAL PRIMARY KEY,
@@ -63,7 +64,45 @@ CREATE TABLE IF NOT EXISTS contract (
 CREATE TABLE IF NOT EXISTS payment (
     id SERIAL PRIMARY KEY, 
     contract_id INTEGER REFERENCES contract(id),
+    contract_type TEXT NOT NULL CHECK (contract_type IN ('private', 'corporate')),
+    personal_client_pesel VARCHAR(11) REFERENCES personal_client(pesel),
+    company_client_krs VARCHAR(10) REFERENCES company_client(krs),
     amount NUMERIC(10, 2) NOT NULL,
     payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE
+    CONSTRAINT check_client_type CHECK (
+        (contract_type = 'private' AND personal_client_pesel IS NOT NULL AND company_client_krs IS NULL) OR
+        (contract_type = 'corporate' AND personal_client_pesel IS NULL AND company_client_krs IS NOT NULL)
+    )
+);
+
+-- period_length is in months
+CREATE TABLE IF NOT EXISTS subscription (
+    id SERIAL PRIMARY KEY,
+    software_id INTEGER REFERENCES software(id),
+    client_type TEXT NOT NULL CHECK (client_type IN ('private', 'corporate')),
+    client_pesel VARCHAR(11) REFERENCES personal_client(pesel),
+    client_krs VARCHAR(10) REFERENCES company_client(krs),
+    name TEXT NOT NULL,
+    period_length INTEGER NOT NULL,
+    price NUMERIC(10, 2) NOT NULL,
+    CONSTRAINT check_client_type CHECK (
+        (client_type = 'private' AND client_pesel IS NOT NULL AND client_krs IS NULL) OR
+        (client_type = 'corporate' AND client_pesel IS NULL AND client_krs IS NOT NULL)
+    ),
+    CONSTRAINT check_period_length CHECK (period_length >= 1 AND period_length <= 24)
+);
+
+CREATE TABLE IF NOT EXISTS subscription_payment (
+    id SERIAL PRIMARY KEY,
+    subscription_id INTEGER REFERENCES subscription(id) NOT NULL,
+    price NUMERIC(10, 2) NOT NULL,
+    payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    client_type TEXT NOT NULL CHECK (client_type IN ('private', 'corporate')),
+    client_pesel VARCHAR(11) REFERENCES personal_client(pesel),
+    client_krs VARCHAR(10) REFERENCES company_client(krs),
+    CONSTRAINT check_client_type CHECK (
+        (client_type = 'private' AND client_pesel IS NOT NULL AND client_krs IS NULL) OR
+        (client_type = 'corporate' AND client_pesel IS NULL AND client_krs IS NOT NULL)
+    )
 );

@@ -60,3 +60,13 @@ pub struct Payment {
     pub payment_date: DateTime<Utc>,
     pub is_deleted: bool,
 }
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+pub struct Subscription {
+    pub id: i32,
+    pub software_id: i32,
+    pub client_id: ClientId,
+    pub name: String,
+    pub period_length: i32,
+    pub price: BigDecimal,
+}
