@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS payment (
     )
 );
 
--- period is in months
+-- period_length is in months
 CREATE TABLE IF NOT EXISTS subscription (
     id SERIAL PRIMARY KEY,
     software_id INTEGER REFERENCES software(id),
@@ -84,11 +84,25 @@ CREATE TABLE IF NOT EXISTS subscription (
     client_pesel VARCHAR(11) REFERENCES personal_client(pesel),
     client_krs VARCHAR(10) REFERENCES company_client(krs),
     name TEXT NOT NULL,
-    period INTEGER NOT NULL,
+    period_length INTEGER NOT NULL,
     price NUMERIC(10, 2) NOT NULL,
     CONSTRAINT check_client_type CHECK (
         (client_type = 'private' AND client_pesel IS NOT NULL AND client_krs IS NULL) OR
         (client_type = 'corporate' AND client_pesel IS NULL AND client_krs IS NOT NULL)
     ),
-    CONSTRAINT check_period CHECK (period >= 1 AND period <= 24)
+    CONSTRAINT check_period_length CHECK (period_length >= 1 AND period_length <= 24)
+);
+
+CREATE TABLE IF NOT EXISTS subscription_payment (
+    id SERIAL PRIMARY KEY,
+    subscription_id INTEGER REFERENCES subscription(id) NOT NULL,
+    price NUMERIC(10, 2) NOT NULL,
+    payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    client_type TEXT NOT NULL CHECK (client_type IN ('private', 'corporate')),
+    client_pesel VARCHAR(11) REFERENCES personal_client(pesel),
+    client_krs VARCHAR(10) REFERENCES company_client(krs),
+    CONSTRAINT check_client_type CHECK (
+        (client_type = 'private' AND client_pesel IS NOT NULL AND client_krs IS NULL) OR
+        (client_type = 'corporate' AND client_pesel IS NULL AND client_krs IS NOT NULL)
+    )
 );

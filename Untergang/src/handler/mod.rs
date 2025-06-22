@@ -13,7 +13,8 @@ use crate::{
     db::{
         check_if_client_exists, check_if_client_has_contract_for_product,
         check_product_and_client_exist, create_contract_in_db, find_discounts_for_client,
-        get_contract_by_id, get_price_for_product, pay_for_contract,
+        get_contract_by_id, get_highest_discount_for_product, get_price_for_product,
+        pay_for_contract,
     },
 };
 
@@ -116,7 +117,7 @@ pub async fn update_client(
             sqlx::query!(
                 "UPDATE personal_client SET first_name = $1, last_name = $2, email = $3, phone_number = $4 WHERE pesel = $5",
                 individual.first_name,
-                individual.last_name,
+                individual.last_name,   
                 individual.email,
                 individual.phone_number,
                 individual.pesel,
@@ -369,9 +370,17 @@ pub async fn create_payment(
 }
 
 pub mod subscriptions {
-    use axum::extract::State;
+    use super::*;   
 
-    use crate::{client::ClientId, db::check_if_client_exists, handler::AppError, sqlx::Pool};
+    use crate::{
+        client::ClientId,
+        db::{
+            check_if_client_exists, check_if_client_has_subscriptions_or_contracts,
+            check_if_is_first_subscription_payment, create_subscription_in_db,
+            get_highest_discount_for_product,
+        },
+        handler::AppError,
+    };
 
     #[derive(Clone, serde::Deserialize)]
     pub struct SubscriptionRequest {
@@ -391,7 +400,7 @@ pub mod subscriptions {
         let price = BigDecimal::from_f64(subscription_request.price)
             .expect("Failed to convert price to BigDecimal");
 
-        create_subscription_in_db(
+        let subscription_id = create_subscription_in_db(
             &pool,
             &subscription_request.client_id,
             &subscription_request.software_id,
@@ -401,9 +410,68 @@ pub mod subscriptions {
         )
         .await
         .map_err(|e| {
-            AppError::InternalServerError(format!("Failed to create subscription: {}", e))
+            AppError::InternalServerError(format!("Failed to create subscription: {:?}", e))
         })?;
 
+        create_subscription_payment(&pool, &subscription_request.client_id, subscription_id, &price, subscription_request.software_id)
+            .await
+            .map_err(|e| {
+                AppError::InternalServerError(format!("Failed to create subscription payment: {:?}", e))
+            })?;
+
         Ok((StatusCode::CREATED, "Subscription created".to_string()))
+    }
+
+    pub async fn create_subscription_payment(
+        state: &Pool<Postgres>, 
+        client_id: &ClientId,
+        subscription_id: i32,
+        price: &BigDecimal,
+        product_id: i32,
+    ) -> Result<(), AppError> {
+        let is_first_subscription_payment =
+            check_if_is_first_subscription_payment(state, subscription_id)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!(
+                        "Failed to check if the subscription payment is the first one: {:?}",
+                        e
+                    ))
+                })?;
+
+        let is_recurring_customer = check_if_client_has_subscriptions_or_contracts(
+            state,
+            &client_id,
+        )
+        .await
+        .map_err(|e| {
+            AppError::InternalServerError(format!(
+                "Failed to check if the client is a recurring customer: {:?}",
+                e
+            ))
+        })?;
+
+        let mut discount = BigDecimal::from_f64(0.0).expect("Failed to convert 0.0 to BigDecimal");
+
+        if is_recurring_customer {
+            discount = BigDecimal::from_f64(0.05).expect("Failed to convert 0.05 to BigDecimal");
+        }
+
+        if is_first_subscription_payment {
+            discount += get_highest_discount_for_product(state, &product_id)
+                .await
+                .map_err(|e| {
+                    AppError::InternalServerError(format!(
+                        "Failed to find discounts for client: {:?}",
+                        e
+                    ))
+                })?;
+        }
+
+        let final_price = price
+            * (BigDecimal::from_f64(1.0).expect("Failed to convert 1.0 to BigDecimal") - discount);
+
+        create_subscription_payment_in_db(state, subscription_id, final_price)
+
     }
 }
